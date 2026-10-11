@@ -17,7 +17,14 @@ const POWERS = {
   slow: { letter: 'S', bg: '#4361ee', name: 'CHILLSEED' },
   rev:  { letter: 'R', bg: '#9d4edd', name: 'REWINDSEED' },
 };
-const SHOOTER_POS = new THREE.Vector3(0, 0.6, 1.0);
+const PERCHES = [
+  new THREE.Vector3(0, 0.6, 1.8),    // home tree (central, near the old stump)
+  new THREE.Vector3(-8, 0.6, -5.5),  // west tree (between the south & middle runs)
+  new THREE.Vector3(9, 0.6, -6),     // east tree (between the south & middle runs)
+  new THREE.Vector3(0, 0.6, 9.5),    // north tree (between the top run & the skull)
+];
+const SHOOTER_POS = PERCHES[0]; // legacy anchor; the live muzzle origin is tarsius.position
+const LEAP_DUR = 0.5; // seconds for a tree-to-tree leap
 const baseSpeed = () => (0.95 + 0.4 * (G.spawned / TOTAL_BALLS)) * (DIFFS[G.diff] || 1);
 
 /* ==================== AUDIO (all procedural) ==================== */
@@ -71,6 +78,7 @@ function sfx(kind) {
     case 'win': [72, 76, 79, 84, 88].forEach((m, i) => tone(mf(m), mf(m), 0.22, 'triangle', 0.12, i * 0.11)); break;
     case 'lose': [67, 64, 60, 55].forEach((m, i) => tone(mf(m), mf(m) * 0.97, 0.3, 'sawtooth', 0.08, i * 0.18)); break;
     case 'click': tone(880, 880, 0.05, 'square', 0.05); break;
+    case 'leap': tone(280, 760, 0.18, 'sine', 0.1); tone(560, 990, 0.12, 'sine', 0.06, 0.08); break;
   }
 }
 /* tiny island BGM: plucked pentatonic loop + bass */
@@ -128,9 +136,12 @@ scene.fog = new THREE.Fog(0x9fd8ef, 60, 140);
 const FRUSTUM = 40;
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
 function updateOrthoCamera() {
-  const aspect = innerWidth / innerHeight;
-  camera.left = (-FRUSTUM * aspect) / 2; camera.right = (FRUSTUM * aspect) / 2;
-  camera.top = FRUSTUM / 2; camera.bottom = -FRUSTUM / 2;
+  const aspect = innerWidth / Math.max(1, innerHeight);
+  // Portrait phones are narrow: keep the island's width fitted by expanding
+  // the vertical frustum instead of cropping the sides.
+  const fit = aspect >= 1 ? FRUSTUM : FRUSTUM / Math.max(0.5, aspect);
+  camera.left = (-fit * aspect) / 2; camera.right = (fit * aspect) / 2;
+  camera.top = fit / 2; camera.bottom = -fit / 2;
   camera.updateProjectionMatrix();
 }
 updateOrthoCamera();
@@ -352,10 +363,12 @@ function groundBlob(x, z, r, opacity = 0.26, squashZ = 1) {
   return m;
 }
 
-/* ---------------- Post-processing: EffectComposer (sharp, no blur) ----------------
-   RenderPass -> UnrealBloomPass (subtle,
-   low strength + high threshold: only sun highlights pop) -> OutputPass
-   (sRGB conversion, no depth-of-field, no tilt-shift: island stays 100% sharp). */
+/* ---------------- Post-processing: EffectComposer (toy macro look) ----------------
+   RenderPass -> UnrealBloomPass (very subtle: strength 0.22 + high 0.85
+   threshold, so only sunny plastic highlights glow) -> TiltShiftPass
+   (gentle vertical blur confined to the extreme top/bottom edges for the
+   macro-photography miniature illusion; center + HUD stay tack-sharp)
+   -> OutputPass (sRGB encode). */
 const _fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const _fsGeo = new THREE.PlaneGeometry(2, 2);
 function _fsMat(frag, uniforms) {
@@ -402,24 +415,54 @@ class UnrealBloomPass {
     this.bloomTex = tmpA.texture;
   }
 }
+class TiltShiftPass {
+  // Macro-photography miniature illusion: only the extreme top/bottom edges
+  // soften (gentle vertical blur); the playfield center stays tack-sharp.
+  // HUD is DOM above the canvas, so it is never blurred.
+  constructor() {
+    this.mat = _fsMat(
+      'uniform sampler2D tDiffuse; uniform sampler2D tBloom; uniform vec2 uRes; uniform float uBloom;' +
+      'varying vec2 vUv;' +
+      'vec3 sampleAll(vec2 uv){ return texture2D(tDiffuse, uv).rgb + texture2D(tBloom, uv).rgb * uBloom; }' +
+      'void main(){ vec3 sharp = sampleAll(vUv);' +
+      ' float d = abs(vUv.y - 0.5); float amt = smoothstep(0.36, 0.5, d);' +
+      ' vec2 px = 1.0 / uRes;' +
+      ' vec3 b = sharp * 0.36;' +
+      ' b += sampleAll(vUv + vec2(0., 1.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv - vec2(0., 1.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv + vec2(0., 3.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv - vec2(0., 3.6) * px) * 0.16;' +
+      ' gl_FragColor = vec4(mix(sharp, b, amt * 0.75), 1.0); }',
+      { tDiffuse: { value: null }, tBloom: { value: null }, uRes: { value: new THREE.Vector2(1, 1) },
+        uBloom: { value: 0.22 } });
+    this.mesh = new THREE.Mesh(_fsGeo, this.mat);
+    this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
+  }
+  render(r, read, write, bloomTex) {
+    this.mat.uniforms.tDiffuse.value = read.texture;
+    this.mat.uniforms.tBloom.value = bloomTex;
+    const sz = r.getSize(new THREE.Vector2());
+    this.mat.uniforms.uRes.value.set(sz.x, sz.y);
+    r.setRenderTarget(write); r.render(this.fsScene, _fsCam);
+  }
+}
 class OutputPass {
   constructor() {
-    // neutralResolve: sRGB encode only (scene must stay tack-sharp, no grade/vignette)
+    // neutralResolve: sRGB encode only (tilt-shift already composited the bloom)
     this.mat = _fsMat(
-      'uniform sampler2D tSrc; uniform sampler2D tBloom; uniform float uBloom; varying vec2 vUv;' +
-      'void main(){ vec3 col = texture2D(tSrc, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloom;' +
+      'uniform sampler2D tSrc; varying vec2 vUv;' +
+      'void main(){ vec3 col = texture2D(tSrc, vUv).rgb;' +
       ' col = max(col, vec3(0.0));' +
       ' float lum = dot(col, vec3(0.299,0.587,0.114)); col = mix(vec3(lum), col, 1.05);' +
       ' vec3 a = col * 12.92; vec3 b = 1.055 * pow(col, vec3(1.0/2.4)) - 0.055;' +
       ' vec3 srgb = mix(a, b, step(vec3(0.0031308), col));' +
       ' gl_FragColor = vec4(srgb, 1.0); }',
-      { tSrc: { value: null }, tBloom: { value: null }, uBloom: { value: 0.22 } });
+      { tSrc: { value: null } });
     this.mesh = new THREE.Mesh(_fsGeo, this.mat);
     this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
   }
-  render(r, read, bloomTex) {
+  render(r, read) {
     this.mat.uniforms.tSrc.value = read.texture;
-    this.mat.uniforms.tBloom.value = bloomTex;
     r.setRenderTarget(null); r.render(this.fsScene, _fsCam);
   }
 }
@@ -427,6 +470,7 @@ class EffectComposer {
   constructor(r) {
     this.renderer = r;
     this.renderPass = null; this.bloomPass = null;
+    this.tiltPass = null;
     this.outputPass = null;
     this.enabled = true; this._ok = true;
     try {
@@ -440,6 +484,7 @@ class EffectComposer {
         return rt;
       };
       this.rtScene = mk(sz.x, sz.y, true);
+      this.rtTilt = mk(sz.x, sz.y, false);
       this.rtBloomA = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
       this.rtBloomB = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
     } catch (e) { this._ok = false; }
@@ -447,6 +492,7 @@ class EffectComposer {
   addPass(p) {
     if (p instanceof RenderPass) this.renderPass = p;
     else if (p instanceof UnrealBloomPass) this.bloomPass = p;
+    else if (p instanceof TiltShiftPass) this.tiltPass = p;
     else if (p instanceof OutputPass) this.outputPass = p;
     return this;
   }
@@ -456,6 +502,7 @@ class EffectComposer {
       if (rt.depthTexture) { rt.depthTexture.image.width = Math.max(2, ww | 0); rt.depthTexture.image.height = Math.max(2, hh | 0); }
     };
     if (this.rtScene) rSet(this.rtScene, w, h);
+    if (this.rtTilt) rSet(this.rtTilt, w, h);
     if (this.rtBloomA) rSet(this.rtBloomA, w / 2, h / 2);
     if (this.rtBloomB) rSet(this.rtBloomB, w / 2, h / 2);
   }
@@ -465,7 +512,8 @@ class EffectComposer {
       this.renderPass.render(this.renderer, this.rtScene);
       let bloomTex = null;
       if (this.bloomPass) { this.bloomPass.render(this.renderer, this.rtScene, this.rtBloomA, this.rtBloomB); bloomTex = this.bloomPass.bloomTex; }
-      if (this.outputPass) this.outputPass.render(this.renderer, this.rtScene, bloomTex || this.rtBloomA.texture);
+      if (this.tiltPass) this.tiltPass.render(this.renderer, this.rtScene, this.rtTilt, bloomTex || this.rtBloomA.texture);
+      if (this.outputPass) this.outputPass.render(this.renderer, this.rtTilt);
       else { this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
     } catch (e) { this.enabled = false; this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
   }
@@ -475,6 +523,7 @@ try {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(0.22, 0.85));
+  composer.addPass(new TiltShiftPass());
   composer.addPass(new OutputPass());
 } catch (e) { composer = null; }
 
@@ -870,11 +919,73 @@ function nearPath(x, z, d = 1.9) {
     if ((p.x - x) ** 2 + (p.z - z) ** 2 < d * d) return true;
   }
   if ((x - SHOOTER_POS.x) ** 2 + (z - SHOOTER_POS.z) ** 2 < 25) return true; // clear stage round the star
+  for (const p of PERCHES) if ((x - p.x) ** 2 + (z - p.z) ** 2 < 12) return true; // room round every perch tree
   if ((x - 7.4) ** 2 + (z - 15) ** 2 < 14) return true; // skull cave approach
   if ((x + 19.5) ** 2 + (z + 11) ** 2 < 9) return true; // marble portal
   if ((x - 18.5) ** 2 + (z - 2.5) ** 2 < 4) return true; // egg shrine
   if ((x + 4.5) ** 2 + (z - 8.6) ** 2 < 10) return true; // house plot stays clear
   return false;
+}
+/* ---- perch trees: climbable pines the tarsius clings to and leaps between ----
+   Each gets a glow ring (active perch pulses green) + a generous invisible
+   hit-cylinder so tapping the tree (mouse or touch) orders a leap. */
+const perchRings = [], perchHit = [];
+{
+  // Tall climbable pine: thick trunk the tarsius hugs + high canopy that
+  // crowns well above his straw hat (he reads as clinging, not standing).
+  const trunkM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x7f4f24, roughness: 0.2 });
+  const canopyCols = [0x37b24d, 0x4cc96f, 0x6fdc73];
+  function perchTree(x, z) {
+    const g = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 1.0, 6.4, 16), trunkM);
+    trunk.position.y = 3.2; trunk.castShadow = true; trunk.receiveShadow = true;
+    g.add(trunk);
+    // rounded crown-friendly trunk top (no flat stovepipe disc)
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.75, 16, 12), trunkM);
+    cap.position.y = 6.4; cap.scale.y = 0.55; cap.castShadow = true;
+    g.add(cap);
+    // knobbly bark bumps spiralling up the trunk
+    for (let i = 0; i < 9; i++) {
+      const a = i * 2.4, b = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), trunkM);
+      b.position.set(Math.cos(a) * 0.9, 0.9 + i * 0.65, Math.sin(a) * 0.9);
+      b.scale.set(1, 0.7, 1); g.add(b);
+    }
+    // high compact umbrella canopy, lifted well clear of the straw hat and
+    // pulled to the back so the south face where he clings stays open
+    [[0, 7.6, -1.5, 1.0], [-1.35, 6.9, -1.3, 0.9], [1.4, 7.0, -1.35, 0.95], [0.1, 6.5, -2.1, 0.8]].forEach(([ox, oy, oz, r], i) => {
+      const f = new THREE.Mesh(sculpt(new THREE.IcosahedronGeometry(r, 1), 0.12),
+        new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: canopyCols[i % 3], roughness: 0.2 }));
+      f.position.set(ox, oy, oz); f.castShadow = true;
+      g.add(f);
+    });
+    // hanging vines with leaf tufts (tarsier playground dressing)
+    const vineM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    [[1.0, 0.3], [-1.0, -0.35]].forEach(([vx, vz], vi) => {
+      const v = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.8 - vi * 0.3, 8), vineM);
+      v.position.set(vx, 4.7, vz); g.add(v);
+      const tuft = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), vineM);
+      tuft.position.set(vx, 3.75 - vi * 0.3, vz); tuft.scale.set(1.2, 0.8, 1.2); tuft.castShadow = true;
+      g.add(tuft);
+    });
+    g.position.set(x, 0.5, z);
+    g.rotation.y = Math.random() * 6;
+    g.rotation.x = -0.07; // faint organic lean so no two perches match
+    scene.add(g);
+    groundBlob(x, z, 1.7, 0.26);
+  }
+  const hitM = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false });
+  PERCHES.forEach((p, i) => {
+    perchTree(p.x, p.z);
+    const ringM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffe8a3,
+      emissive: 0xffe8a3, emissiveIntensity: 0.25, roughness: 0.2, metalness: 0.0,
+      clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.9, 0.16, 10, 32), ringM);
+    ring.rotation.x = Math.PI / 2; ring.position.set(p.x, 0.75, p.z);
+    scene.add(ring); perchRings.push(ring);
+    const hit = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 7.5, 8), hitM);
+    hit.position.set(p.x, 3.2, p.z); hit.userData.perch = i;
+    scene.add(hit); perchHit.push(hit);
+  });
 }
 {
   let placed = 0, guard = 0;
@@ -1057,48 +1168,12 @@ const butterflies = [];
   }
 }
 
-/* ==================== TARSIUS SHOOTER ==================== */
+/* ==================== TARSIUS SHOOTER (tree-clinger) ==================== */
 const tarsius = new THREE.Group();
-let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
+let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
 {
-  const stumpM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x8a5a33, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const stumpTopM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xd9a75f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const stump = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.7, 0.8, 20), stumpM);
-  stump.position.y = 0.4; stump.castShadow = true; stump.receiveShadow = true;
-  tarsius.add(stump);
-  const ring = new THREE.Mesh(new THREE.CylinderGeometry(1.32, 1.32, 0.14, 20), stumpTopM);
-  ring.position.y = 0.82; ring.receiveShadow = true;
-  tarsius.add(ring);
-  // gnarled roots hugging the stump base (organic chunk)
-  [[0.9, 0.3], [-0.8, 0.5], [0.1, -1.0], [-0.4, -0.9]].forEach(([rx, rz]) => {
-    const root = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), stumpM);
-    root.position.set(rx, 0.12, rz); root.scale.set(1.2, 0.55, 1.0); root.castShadow = true;
-    tarsius.add(root);
-  });
-  [[1.05, -0.45, 1.35], [-1.05, -0.35, 1.2]].forEach(([rx, rz, rs]) => {
-    const root = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), stumpM);
-    root.position.set(rx, 0.1, rz); root.scale.set(rs, 0.5, 0.95); root.castShadow = true;
-    tarsius.add(root);
-  });
-  // hand-carved spiral growth-ring top (canvas texture disc)
-  const spiralTex = canvasTex(256, (x, s) => {
-    x.fillStyle = '#d9a75f'; x.fillRect(0, 0, s, s);
-    x.strokeStyle = '#a9763f'; x.lineWidth = 5; x.globalAlpha = 0.85;
-    for (let r = 16; r < 120; r += 13) { x.beginPath(); x.arc(s / 2, s / 2, r, 0, 7); x.stroke(); }
-    x.strokeStyle = '#8a5a33'; x.lineWidth = 4; x.globalAlpha = 0.9; x.beginPath();
-    for (let a = 0; a < 40; a++) {
-      const r = 4 + a * 2.8, px = s / 2 + Math.cos(a * 0.5) * r, py = s / 2 + Math.sin(a * 0.5) * r;
-      a ? x.lineTo(px, py) : x.moveTo(px, py);
-    }
-    x.stroke(); x.globalAlpha = 1;
-    x.fillStyle = '#8a5a33'; x.beginPath(); x.arc(s / 2, s / 2, 6, 0, 7); x.fill();
-    speckle(x, s, 200, ['#a9763f', '#e8c07f'], 0.2, 0.4, 0.8, 1.8);
-  }, 1, 1);
-  const spiralTop = new THREE.Mesh(new THREE.CircleGeometry(1.28, 40),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff, map: spiralTex,
-      roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
-  spiralTop.rotation.x = -Math.PI / 2; spiralTop.position.y = 0.9; spiralTop.receiveShadow = true;
-  tarsius.add(spiralTop);
+  // (no stump: this little one clings straight to the perch trunk, tarsier-style —
+  // the trunk passes just behind his belly and his pad-tipped limbs grip the bark)
   // cute mushrooms + leafy sprouts growing round the rim
   const shroomStemM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf7ecd4,
     roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
@@ -1116,7 +1191,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
       const d = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), dotM);
       d.position.set(dx, dy, dz); sh.add(d);
     });
-    sh.position.set(mx, 0.88, mz);
+    sh.position.set(mx, 0.02, mz);
     tarsius.add(sh);
   });
   const sproutM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x46b457,
@@ -1130,7 +1205,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
       lf.position.set(q * 0.1, 0.3, 0); lf.scale.set(1.3, 0.45, 0.7);
       lf.rotation.z = q * (0.5 + si * 0.2); lf.castShadow = true; sp.add(lf);
     });
-    sp.position.set(sx, 0.88, sz);
+    sp.position.set(sx, 0.02, sz);
     tarsius.add(sp);
   });
   // tiny glowing mushrooms + moss ringing the stump bottom
@@ -1183,7 +1258,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     tarsius.add(fern);
   });
 
-  tarsiusBody = new THREE.Group(); tarsiusBody.position.y = 1.0; tarsiusBody.scale.setScalar(1.3); tarsius.add(tarsiusBody);
+  tarsiusBody = new THREE.Group(); tarsiusBody.position.set(0, 1.0, 0.55); tarsiusBody.scale.setScalar(1.3); tarsius.add(tarsiusBody);
   // ultra-cute stylized TARSIER: huge head, saucer eyes, spindly limbs, vinyl gloss
   const fur = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xee9a2f, roughness: 0.2, });
   const bellyM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xf7e8c8, roughness: 0.2, });
@@ -1257,16 +1332,18 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     bloom.name = 'leafhat';
     tarsiusBody.add(bloom);
   }
-  // tiny green leaf hat + colorful bandana for the little adventurer
-  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const hat = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 14), hatM);
-  hat.position.set(-0.08, 2.28, -0.02); hat.scale.set(1.15, 0.45, 1.15);
-  hat.rotation.z = 0.22; hat.castShadow = true;
-  tarsiusBody.add(hat);
-  const hatTip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), hatM);
-  hatTip.position.set(-0.42, 2.42, -0.02); hatTip.scale.set(1.5, 0.45, 0.8);
-  hatTip.rotation.z = 0.55; hatTip.castShadow = true;
-  tarsiusBody.add(hatTip);
+  // tiny straw hat with a red band for the little adventurer
+  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe3c06a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const bandHM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.62, 0.09, 22), hatM);
+  brim.position.set(-0.06, 2.22, -0.02); brim.rotation.z = 0.14; brim.castShadow = true;
+  tarsiusBody.add(brim);
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 14), hatM);
+  crown.position.set(-0.08, 2.38, -0.02); crown.scale.set(1, 0.75, 1); crown.castShadow = true;
+  tarsiusBody.add(crown);
+  const hatBand = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.06, 10, 22), bandHM);
+  hatBand.position.set(-0.08, 2.3, -0.02); hatBand.rotation.x = Math.PI / 2 - 0.14;
+  tarsiusBody.add(hatBand);
   const bandM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.13, 12, 24), bandM);
   band.position.set(0, 0.62, 0.1); band.rotation.x = 1.25; band.rotation.z = 0.2;
@@ -1359,21 +1436,21 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     });
   });
   // (backpack removed: tiny tarsier travels light, flower only)
-  // long thin tail wrapping playfully round the stump, ending in a fur tuft
+  // long thin tail wrapping playfully round the perch trunk, ending in a fur tuft
   tailMesh = new THREE.Group();
-  tailMesh.position.set(0, -0.85, -0.2);
+  tailMesh.position.set(0, -0.85, 0.4);
   {
     const wrap = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0.3, 0.1, -0.55),
-      new THREE.Vector3(1.45, 0.0, -0.5),
-      new THREE.Vector3(1.7, -0.05, 0.6),
-      new THREE.Vector3(0.9, -0.1, 1.45),
-      new THREE.Vector3(-0.3, -0.05, 1.5),
+      new THREE.Vector3(0.15, 0.1, -0.5),
+      new THREE.Vector3(0.62, 0.0, -0.4),
+      new THREE.Vector3(0.7, -0.05, 0.25),
+      new THREE.Vector3(0.35, -0.1, 0.6),
+      new THREE.Vector3(-0.15, -0.05, 0.62),
     ]);
     const rope = new THREE.Mesh(new THREE.TubeGeometry(wrap, 40, 0.06, 8), fur);
     rope.castShadow = true;
     tailMesh.add(rope);
-    const tuftAt = new THREE.Vector3(-0.3, -0.05, 1.5);
+    const tuftAt = new THREE.Vector3(-0.15, -0.05, 0.62);
     [[0, 0, 0, 0.16], [0.12, 0.08, 0.05, 0.12], [-0.1, 0.1, -0.04, 0.11]].forEach(([dx, dy, dz, tr]) => {
       const puff = new THREE.Mesh(new THREE.SphereGeometry(tr, 12, 10), bellyM);
       puff.position.set(tuftAt.x + dx, tuftAt.y + dy, tuftAt.z + dz);
@@ -1385,7 +1462,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
 
   tarsius.position.copy(SHOOTER_POS);
   scene.add(tarsius);
-  groundBlob(SHOOTER_POS.x, SHOOTER_POS.z, 2.6, 0.3);
+  tarBlob = groundBlob(SHOOTER_POS.x, SHOOTER_POS.z, 2.0, 0.3);
 }
 function makeOrb(colorIdx) {
   const m = new THREE.Mesh(new THREE.SphereGeometry(0.52, 28, 20), marbleMat(PALETTE[colorIdx]));
@@ -1429,13 +1506,35 @@ const G = {
   spawned: 0, destroyed: 0, score: 0, combo: 1, maxCombo: 1,
   streak: 0, bestStreak: 0, shots: 0, hits: 0, powersUsed: 0,
   aim: 0, time: 0, playTime: 0, introT: 0,
+  perch: 0, leapT: 0, leapFrom: null, // tree-perch state + leap animation
   cur: 0, nxt: 1, shootCD: 0, blink: 0, recoil: 0, happy: 0, flash: 0,
   slowT: 0, revT: 0, shake: 0, danger: false, heartT: 0,
   best: 0,
 };
 try { G.best = +(localStorage.getItem('gunbatte-balls-best') || 0); } catch { /* private mode */ }
 
+const activeColors = () => {
+  const set = new Set();
+  for (const b of G.balls) set.add(b.color);
+  return set.size ? [...set] : [...Array(COLORS_N).keys()];
+};
+// Path spawns are always fully random over every color — runs of same-color
+// balls happen by chance, never forced.
+// Only the shooter's dealt balls are constrained (see dealColor).
 const randColor = () => (Math.random() * COLORS_N) | 0;
+// The shooter only deals colors that actually exist on the path right now,
+// so late-game you never get stuck holding a dead color nobody can match.
+const dealColor = () => {
+  const act = activeColors();
+  return act[(Math.random() * act.length) | 0];
+};
+// If pops wiped out a color entirely, re-deal any held ball of that color.
+function sanitizeHeld() {
+  if (!G.balls.length) return;
+  const act = activeColors();
+  if (!act.includes(G.cur)) G.cur = act[(Math.random() * act.length) | 0];
+  if (!act.includes(G.nxt)) G.nxt = act[(Math.random() * act.length) | 0];
+}
 const randPower = () => ['bomb', 'slow', 'rev'][(Math.random() * 3) | 0];
 const pointAt = s => curve.getPointAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
 const tangentAt = s => curve.getTangentAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
@@ -1575,6 +1674,7 @@ function triggerPower(type, pos) {
     showBanner('REWINDSEED!', 'time rolls back…');
     floater('+REWIND', pos, true);
   }
+  sanitizeHeld();
   bumpScore(); updateHUD(); checkWin();
 }
 
@@ -1595,12 +1695,20 @@ function popCheck(startIdx) {
     if (n >= 4) { shockwave(mid, PALETTE[c], 3.5); G.shake = Math.min(1, G.shake + 0.35); }
     const gained = n * 10 * G.combo;
     G.score += gained; G.destroyed += n;
+    // Zuma-style breather: nudge the whole chain back so the player gains room
+    // (tail stays glued at s=0 instead of piling up past the portal).
+    if (b.length) {
+      for (const x of b) x.s -= 1.2;
+      const tail = b[b.length - 1].s;
+      if (tail < 0) for (const x of b) x.s -= tail;
+    }
     floater(`+${gained}`, mid, n >= 4);
     if (G.combo >= 2) floater(`COMBO ×${G.combo}`, mid.clone().add(new THREE.Vector3(0, 1, 0)));
     G.combo++; G.maxCombo = Math.max(G.maxCombo, G.combo);
     G.happy = 0.7;
     sfx(n >= 4 ? 'big' : 'pop');
     removed.forEach(r => { if (r.power) triggerPower(r.power, r.mesh.position); });
+    sanitizeHeld();
     bumpScore(); updateHUD(); checkWin();
     return true;
   }
@@ -1610,7 +1718,7 @@ function checkWin() {
   if (G.status === 'playing' && G.spawned >= TOTAL_BALLS && G.balls.length === 0) endGame(true);
 }
 function shoot() {
-  if (G.status !== 'playing' || G.shootCD > 0 || G.paused) return;
+  if (G.status !== 'playing' || G.shootCD > 0 || G.paused || G.leapT > 0) return;
   G.shootCD = 0.22;
   const dir = new THREE.Vector3(Math.sin(G.aim), 0, Math.cos(G.aim));
   const mp = new THREE.Vector3(); muzzle.getWorldPosition(mp);
@@ -1626,7 +1734,7 @@ function shoot() {
   G.recoil = 1; G.flash = 0.09;
   G.shots++;
   sfx('shoot');
-  G.cur = G.nxt; G.nxt = randColor();
+  G.cur = G.nxt; G.nxt = dealColor();
   updateHUD();
 }
 function insertShot(proj, hitIdx) {
@@ -1669,7 +1777,7 @@ function insertShot(proj, hitIdx) {
   if (!popCheck(idx)) { G.combo = 1; updateHUD(); }
 }
 function onMiss() {
-  if (G.streak >= 3) floater('miss…', new THREE.Vector3(SHOOTER_POS.x, 3, SHOOTER_POS.z));
+  if (G.streak >= 3) floater('miss…', new THREE.Vector3(tarsius.position.x, 3, tarsius.position.z));
   G.streak = 0; G.combo = 1; updateHUD();
 }
 
@@ -1724,12 +1832,15 @@ function resetGame() {
     streak: 0, bestStreak: 0, shots: 0, hits: 0, powersUsed: 0,
     playTime: 0, shootCD: 0, slowT: 0, revT: 0, shake: 0,
     danger: false, heartT: 0, paused: false, introT: 1.8,
-    status: 'intro', cur: randColor(), nxt: randColor(),
+    status: 'intro', cur: 0, nxt: 1, perch: 0, leapT: 0, leapFrom: null,
   });
+  tarsius.position.copy(PERCHES[0]); tarsius.rotation.y = 0;
   $('end-overlay').classList.add('hidden');
   $('pause-overlay').classList.add('hidden');
   for (let i = 0; i < 10; i++) spawnBall(14 - i * SPACING, randColor(), i === 5 ? 'bomb' : null);
   G.spawned = 10;
+  // Deal the shooter's seeds from the freshly spawned path so both are live colors.
+  G.cur = dealColor(); G.nxt = dealColor();
   showBanner('LEVEL 1', 'Koholint Island — defend the Skull Cave!');
   updateHUD();
 }
@@ -1748,33 +1859,86 @@ function toggleMute() {
   $('mute-btn').classList.toggle('off', G.muted);
 }
 
-/* ---------- input ---------- */
+/* ---------- input: mouse + touch ---------- */
 const ray = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.6);
 const mouseNDC = new THREE.Vector2();
-addEventListener('pointermove', e => {
-  mouseNDC.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+function setAimFromClient(cx, cy) {
+  mouseNDC.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
   ray.setFromCamera(mouseNDC, camera);
   const pt = new THREE.Vector3();
   if (ray.ray.intersectPlane(groundPlane, pt)) {
-    G.aim = Math.atan2(pt.x - SHOOTER_POS.x, pt.z - SHOOTER_POS.z);
+    G.aim = Math.atan2(pt.x - tarsius.position.x, pt.z - tarsius.position.z);
   }
+}
+// Which perch tree (if any) sits under this screen point? Generous hit
+// cylinders make tapping a tree easy on touch screens.
+function perchFromClient(cx, cy) {
+  mouseNDC.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  ray.setFromCamera(mouseNDC, camera);
+  const hits = ray.intersectObjects(perchHit, false);
+  return hits.length ? hits[0].object.userData.perch : -1;
+}
+// Tarsier leap: arc to another perch tree with a mid-air spin. Shooting is
+// locked for the half-second airborne (muzzle origin is mid-flight).
+function leapTo(i) {
+  if (i < 0 || i >= PERCHES.length || i === G.perch || G.leapT > 0) return;
+  if ((G.status !== 'playing' && G.status !== 'intro') || G.paused) return;
+  G.leapFrom = tarsius.position.clone();
+  G.perch = i;
+  G.leapT = LEAP_DUR;
+  sfx('leap');
+}
+function doSwap() {
+  if (G.status !== 'playing' || G.paused) return;
+  const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD();
+}
+// Touch: drag on the island to aim, release to shoot (so aiming never
+// misfires). Mouse keeps the classic move-to-aim, click-to-shoot.
+let touchAimId = null;
+addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    if (e.pointerId !== touchAimId) return;
+  }
+  setAimFromClient(e.clientX, e.clientY);
 });
 addEventListener('pointerdown', e => {
-  if (e.target.closest('button') || e.target.closest('.card')) return;
+  if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
   audio();
-  if (e.button === 2) {
-    if (G.status !== 'playing') return;
-    const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD(); return;
+  if (e.button === 2) { doSwap(); return; }
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    const pi = perchFromClient(e.clientX, e.clientY);
+    if (pi >= 0 && pi !== G.perch) { touchAimId = null; leapTo(pi); return; }
+    touchAimId = e.pointerId;
+    setAimFromClient(e.clientX, e.clientY);
+    return;
   }
+  const pi = perchFromClient(e.clientX, e.clientY);
+  if (pi >= 0 && pi !== G.perch) { leapTo(pi); return; }
+  setAimFromClient(e.clientX, e.clientY);
   shoot();
 });
+addEventListener('pointerup', e => {
+  if (e.pointerId !== touchAimId) return;
+  touchAimId = null;
+  if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
+  const pi = perchFromClient(e.clientX, e.clientY);
+  if (pi >= 0 && pi !== G.perch) { leapTo(pi); return; }
+  setAimFromClient(e.clientX, e.clientY);
+  shoot();
+});
+addEventListener('pointercancel', e => { if (e.pointerId === touchAimId) touchAimId = null; });
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
-    if (G.status !== 'playing' || G.paused) return;
-    const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD();
+    doSwap();
+  } else if (e.code === 'Tab') {
+    e.preventDefault();
+    if (!G.paused) leapTo((G.perch + 1) % PERCHES.length);
+  } else if (e.code.startsWith('Digit')) {
+    const n = +e.code.slice(5);
+    if (n >= 1 && n <= PERCHES.length) leapTo(n - 1);
   } else if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   else if (e.code === 'KeyM') toggleMute();
 });
@@ -1795,7 +1959,15 @@ $('restart-btn').onclick = () => { sfx('click'); resetGame(); };
 $('restart-btn2').onclick = () => { sfx('click'); togglePause(false); resetGame(); };
 $('resume-btn').onclick = () => togglePause(false);
 $('pause-btn').onclick = () => togglePause();
+$('swap-btn').onclick = () => { audio(); doSwap(); };
+$('shooter-box').onclick = () => { audio(); doSwap(); };
 $('mute-btn').onclick = () => { audio(); toggleMute(); sfx('click'); };
+// Touch devices get a gesture-appropriate hint (drag/release/swap button).
+try {
+  if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) {
+    $('hint').innerHTML = 'Drag to aim • Release to shoot • Tap a tree to leap • <b>⇄</b> to swap';
+  }
+} catch { /* ignore */ }
 addEventListener('resize', () => {
   updateOrthoCamera();
   renderer.setSize(innerWidth, innerHeight);
@@ -1840,10 +2012,10 @@ function botThink(skill = ATTRACT_SKILL) {
   // 3) lead the moving chain + human aim wobble
   const spd = baseSpeed() * (G.slowT > 0 ? 0.45 : 1) * (G.revT > 0 ? -0.85 : 1);
   const tp = target.mesh.position;
-  const dist = Math.hypot(tp.x - SHOOTER_POS.x, tp.z - SHOOTER_POS.z);
+  const dist = Math.hypot(tp.x - tarsius.position.x, tp.z - tarsius.position.z);
   const p = pointAt(target.s + THREE.MathUtils.clamp(spd * (dist / 26), -3, 6));
   const wobble = (Math.random() + Math.random() - 1) * (skill.noise ?? 0.025);
-  G.aim = Math.atan2(p.x - SHOOTER_POS.x, p.z - SHOOTER_POS.z) + wobble;
+  G.aim = Math.atan2(p.x - tarsius.position.x, p.z - tarsius.position.z) + wobble;
   tarsius.rotation.y = G.aim;
   G.shootCD = 0;
   shoot();
@@ -1997,12 +2169,27 @@ function tick() {
     skullEyeMat.emissiveIntensity += (target - skullEyeMat.emissiveIntensity) * Math.min(1, dt * 3);
   }
 
-  /* --- tarsius life --- */
-  tarsius.rotation.y = G.aim;
+  /* --- tarsius life: tree-clinger that leaps between perches --- */
+  if (G.leapT > 0 && !G.paused) {
+    G.leapT = Math.max(0, G.leapT - dt);
+    const t = 1 - G.leapT / LEAP_DUR;
+    const e = t * t * (3 - 2 * t); // smoothstep
+    tarsius.position.lerpVectors(G.leapFrom, PERCHES[G.perch], e);
+    tarsius.position.y = 0.6 + Math.sin(t * Math.PI) * 3.2; // hop arc
+    tarsius.rotation.y += dt * 13; // mid-air spin, lands facing aim below
+    tarsiusBody.scale.set(1.3 * 0.85, 1.3 * 1.3, 1.3 * 0.85); // stretched thin mid-leap
+    if (G.leapT <= 0) {
+      tarsius.position.copy(PERCHES[G.perch]);
+      tarsius.rotation.y = G.aim;
+      G.shake = Math.min(1, G.shake + 0.12); // soft landing thud
+    }
+  } else {
+    tarsius.rotation.y = G.aim;
+  }
   tarsiusBody.position.y = 1.0 + Math.sin(G.time * 3) * 0.05 - G.recoil * 0.15 + (G.happy > 0 ? Math.sin(G.happy * 12) * 0.12 : 0);
-  tarsiusBody.rotation.x = G.recoil * 0.25;
+  tarsiusBody.rotation.x = -0.12 + G.recoil * 0.25; // leaned back against the trunk, face tipped to the sky-camera
   const squash = 1 + (G.happy > 0 ? Math.sin(G.happy * 12) * 0.06 : 0);
-  tarsiusBody.scale.set(1.3 * (2 - squash > 0 ? 1 / Math.sqrt(squash) : 1), 1.3 * squash, 1.3);
+  if (G.leapT <= 0) tarsiusBody.scale.set(1.3 * (2 - squash > 0 ? 1 / Math.sqrt(squash) : 1), 1.3 * squash, 1.3);
   if (G.recoil > 0) G.recoil = Math.max(0, G.recoil - dt * 5);
   if (G.happy > 0) G.happy = Math.max(0, G.happy - dt);
   if (tailMesh) tailMesh.rotation.y = Math.sin(G.time * 2.2) * 0.35;
@@ -2026,9 +2213,17 @@ function tick() {
   curOrb.position.y = 0.55 + cb * 0.12;
   curOrb.scale.set(1 - cb * 0.04, 1 + cb * 0.06, 1 - cb * 0.04);
   const nb = Math.sin(G.time * 2 + 1);
-  nextOrb.position.y = 4.4 + nb * 0.12;
+  nextOrb.position.set(tarsius.position.x + 1.9, 4.4 + nb * 0.12, tarsius.position.z + 1.0);
   nextOrb.scale.setScalar(0.65 * (1 + nb * 0.05));
   curOrb.rotation.y += dt; nextOrb.rotation.y -= dt * 1.4;
+  // perch rings: the active tree glows green, the rest glow faint sand
+  for (let i = 0; i < perchRings.length; i++) {
+    const active = i === G.perch;
+    perchRings[i].material.color.setHex(active ? 0x2dc653 : 0xffe8a3);
+    perchRings[i].material.emissive.setHex(active ? 0x2dc653 : 0xffe8a3);
+    perchRings[i].material.emissiveIntensity = active ? 0.85 + Math.sin(G.time * 5) * 0.3 : 0.25;
+  }
+  if (tarBlob) tarBlob.position.set(tarsius.position.x, 0.665, tarsius.position.z);
 
   /* --- camera (sway + shake) --- */
   if (G.shake > 0) G.shake = Math.max(0, G.shake - rawDt * 2.2);
@@ -2086,6 +2281,7 @@ function step(dt, rawDt) {
       // chain movement
       const b = G.balls;
       if (b.length) {
+        const joins = [];
         b[0].s += spd * dt;
         for (let i = 1; i < b.length; i++) {
           const dist = b[i - 1].s - b[i].s;
@@ -2095,6 +2291,8 @@ function step(dt, rawDt) {
             if (b[i - 1].s - b[i].s < SPACING * 0.9) b[i].s = b[i - 1].s - SPACING * 0.9;
           } else if (dist > SPACING + 0.06) {
             b[i].s += Math.min(5.0 * dt, dist - SPACING); // magnet catch-up
+            // two segments just assembled into one group: a 3+ run may be complete
+            if (dist > SPACING * 1.6 && (b[i - 1].s - b[i].s) <= SPACING * 1.6) joins.push(b[i]);
           } else {
             b[i].s += spd * dt;
             if (b[i - 1].s - b[i].s < SPACING) b[i].s = b[i - 1].s - SPACING;
@@ -2109,19 +2307,32 @@ function step(dt, rawDt) {
           const ax = new THREE.Vector3(-tmpAxis.z, 0, tmpAxis.x).normalize();
           x.core.rotateOnWorldAxis(ax, (spd * dt) / BALL_R);
         });
-        const headR = b[0].s / curveLen;
-        const wasDanger = G.danger;
-        G.danger = headR > 0.72;
-        if (G.danger && !wasDanger) {
-          showBanner('THE SKULL STIRS!', 'hurry, little guardian!');
-          sfx('warn');
+        // Zuma-style chaining: freshly assembled segments may complete a 3+ run
+        // (object refs re-resolved since pops splice the array; each pop also
+        // nudges the chain back, so combos buy the player real room).
+        if (!reversing) {
+          for (const ball of joins) {
+            const idx = b.indexOf(ball);
+            if (idx >= 0) popCheck(idx);
+            if (!b.length) break;
+          }
         }
-        if (G.danger) {
-          G.heartT -= dt;
-          if (G.heartT <= 0) { G.heartT = 1.6; sfx('heart'); }
+        if (!b.length) { updateHUD(); }
+        else {
+          const headR = b[0].s / curveLen;
+          const wasDanger = G.danger;
+          G.danger = headR > 0.72;
+          if (G.danger && !wasDanger) {
+            showBanner('THE SKULL STIRS!', 'hurry, little guardian!');
+            sfx('warn');
+          }
+          if (G.danger) {
+            G.heartT -= dt;
+            if (G.heartT <= 0) { G.heartT = 1.6; sfx('heart'); }
+          }
+          if (!reversing && b[0].s >= curveLen - 1.2) endGame(false);
+          updateHUD();
         }
-        if (!reversing && b[0].s >= curveLen - 1.2) endGame(false);
-        updateHUD();
       }
       // projectiles
       for (let i = G.projectiles.length - 1; i >= 0; i--) {
@@ -2188,10 +2399,11 @@ window.__game = {
   scene, camera, TOTAL_BALLS, DIFFS, ATTRACT_SKILL, botThink, simGame, simGames,
   start: () => { $('overlay').classList.add('hidden'); resetGame(); Music.start(); },
   shootAt: (x, z) => {
-    G.aim = Math.atan2(x - SHOOTER_POS.x, z - SHOOTER_POS.z);
+    G.aim = Math.atan2(x - tarsius.position.x, z - tarsius.position.z);
     tarsius.rotation.y = G.aim;
     G.shootCD = 0; shoot();
   },
+  leapTo, PERCHES,
   ballCount: () => G.balls.length,
   score: () => G.score,
   status: () => G.paused ? 'paused' : G.status,

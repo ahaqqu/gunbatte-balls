@@ -1,7 +1,8 @@
 # ◉ GUNBATTE BALLS — Koholint Island
 
 **Ganbatte — do your best!** A **toy-diorama marble shooter** inspired by Zuma and
-*The Legend of Zelda: Link's Awakening*. Guide a big-eyed **tarsius** guardian, blast
+*The Legend of Zelda: Link's Awakening*. Guide a big-eyed **tarsius** guardian clinging
+to its perch tree, leap between **4 trees** for better angles, blast
 seed-shots, match **3+** to pop, and stop 40 marbles from reaching the **Skull Cave**.
 Free demo — one level, three difficulties, runs in the browser.
 
@@ -36,8 +37,9 @@ No build step — Three.js is vendored in `vendor/` (MIT licensed, see `vendor/`
 
 | Input | Action |
 |---|---|
-| Mouse | aim the guardian |
-| Click | shoot seed-shot |
+| Mouse / touch-drag | aim the guardian |
+| Click / release | shoot seed-shot |
+| Click a glowing tree / Tab / 1–4 | leap between perch trees |
 | Right-click / Space | swap current & next seed |
 | P / Esc | pause · M mute |
 

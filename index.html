@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>GunBatte Balls — Koholint Island | Toy-Diorama Marble Shooter</title>
 <meta name="description" content="GunBatte Balls: a Zelda-inspired toy-diorama marble shooter. Guide a tiny tarsius guardian, blast power seeds, and stop the marbles from reaching the Skull Cave. Do your best!" />
 <meta name="theme-color" content="#2d6a4f" />
@@ -37,7 +37,7 @@
     </div>
     <div class="hud-right">
       <div class="score-box">SCORE<div id="score">0</div></div>
-      <div class="shooter-box">
+      <div class="shooter-box" id="shooter-box" title="Tap to swap seeds">
         <div class="ammo"><span class="lbl">NOW</span><div id="cur-ball" class="mini-ball"></div></div>
         <div class="ammo"><span class="lbl">NEXT</span><div id="next-ball" class="mini-ball small"></div></div>
       </div>
@@ -51,9 +51,10 @@
     <div id="banner-sub">Koholint Island</div>
   </div>
 
-  <div id="hint">Move to aim • Click to shoot • Right-click / Space to swap • <b>P</b> pause • <b>M</b> sound</div>
+  <div id="hint">Move to aim • Click to shoot • Click a tree / Tab to leap • Right-click / Space to swap • <b>P</b> pause • <b>M</b> sound</div>
 
   <div id="corner-btns">
+    <button id="swap-btn" title="Swap seeds (Space)">⇄</button>
     <button id="pause-btn" title="Pause (P)">❚❚</button>
     <button id="mute-btn" title="Sound (M)">♪</button>
   </div>
@@ -69,9 +70,10 @@
         <div><span class="seed rev">R</span><b>Rewindseed</b><i>rolls time back</i></div>
       </div>
       <div class="controls-row">
-        <div><b>Move</b><span>aim</span></div>
-        <div><b>Click</b><span>shoot</span></div>
-        <div><b>Space</b><span>swap</span></div>
+        <div><b>Aim</b><span>move / drag</span></div>
+        <div><b>Shoot</b><span>click / release</span></div>
+        <div><b>Leap</b><span>tree / tab</span></div>
+        <div><b>Swap</b><span>space / ⇄</span></div>
       </div>
       <div class="diff-row">
         <button class="diff-btn" data-diff="chill"><b>CHILL</b><span>gentle march</span></button>
