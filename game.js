@@ -128,9 +128,12 @@ scene.fog = new THREE.Fog(0x9fd8ef, 60, 140);
 const FRUSTUM = 40;
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
 function updateOrthoCamera() {
-  const aspect = innerWidth / innerHeight;
-  camera.left = (-FRUSTUM * aspect) / 2; camera.right = (FRUSTUM * aspect) / 2;
-  camera.top = FRUSTUM / 2; camera.bottom = -FRUSTUM / 2;
+  const aspect = innerWidth / Math.max(1, innerHeight);
+  // Portrait phones are narrow: keep the island's width fitted by expanding
+  // the vertical frustum instead of cropping the sides.
+  const fit = aspect >= 1 ? FRUSTUM : FRUSTUM / Math.max(0.5, aspect);
+  camera.left = (-fit * aspect) / 2; camera.right = (fit * aspect) / 2;
+  camera.top = fit / 2; camera.bottom = -fit / 2;
   camera.updateProjectionMatrix();
 }
 updateOrthoCamera();
@@ -352,10 +355,12 @@ function groundBlob(x, z, r, opacity = 0.26, squashZ = 1) {
   return m;
 }
 
-/* ---------------- Post-processing: EffectComposer (sharp, no blur) ----------------
-   RenderPass -> UnrealBloomPass (subtle,
-   low strength + high threshold: only sun highlights pop) -> OutputPass
-   (sRGB conversion, no depth-of-field, no tilt-shift: island stays 100% sharp). */
+/* ---------------- Post-processing: EffectComposer (toy macro look) ----------------
+   RenderPass -> UnrealBloomPass (very subtle: strength 0.22 + high 0.85
+   threshold, so only sunny plastic highlights glow) -> TiltShiftPass
+   (gentle vertical blur confined to the extreme top/bottom edges for the
+   macro-photography miniature illusion; center + HUD stay tack-sharp)
+   -> OutputPass (sRGB encode). */
 const _fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const _fsGeo = new THREE.PlaneGeometry(2, 2);
 function _fsMat(frag, uniforms) {
@@ -402,24 +407,54 @@ class UnrealBloomPass {
     this.bloomTex = tmpA.texture;
   }
 }
+class TiltShiftPass {
+  // Macro-photography miniature illusion: only the extreme top/bottom edges
+  // soften (gentle vertical blur); the playfield center stays tack-sharp.
+  // HUD is DOM above the canvas, so it is never blurred.
+  constructor() {
+    this.mat = _fsMat(
+      'uniform sampler2D tDiffuse; uniform sampler2D tBloom; uniform vec2 uRes; uniform float uBloom;' +
+      'varying vec2 vUv;' +
+      'vec3 sampleAll(vec2 uv){ return texture2D(tDiffuse, uv).rgb + texture2D(tBloom, uv).rgb * uBloom; }' +
+      'void main(){ vec3 sharp = sampleAll(vUv);' +
+      ' float d = abs(vUv.y - 0.5); float amt = smoothstep(0.36, 0.5, d);' +
+      ' vec2 px = 1.0 / uRes;' +
+      ' vec3 b = sharp * 0.36;' +
+      ' b += sampleAll(vUv + vec2(0., 1.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv - vec2(0., 1.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv + vec2(0., 3.6) * px) * 0.16;' +
+      ' b += sampleAll(vUv - vec2(0., 3.6) * px) * 0.16;' +
+      ' gl_FragColor = vec4(mix(sharp, b, amt * 0.75), 1.0); }',
+      { tDiffuse: { value: null }, tBloom: { value: null }, uRes: { value: new THREE.Vector2(1, 1) },
+        uBloom: { value: 0.22 } });
+    this.mesh = new THREE.Mesh(_fsGeo, this.mat);
+    this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
+  }
+  render(r, read, write, bloomTex) {
+    this.mat.uniforms.tDiffuse.value = read.texture;
+    this.mat.uniforms.tBloom.value = bloomTex;
+    const sz = r.getSize(new THREE.Vector2());
+    this.mat.uniforms.uRes.value.set(sz.x, sz.y);
+    r.setRenderTarget(write); r.render(this.fsScene, _fsCam);
+  }
+}
 class OutputPass {
   constructor() {
-    // neutralResolve: sRGB encode only (scene must stay tack-sharp, no grade/vignette)
+    // neutralResolve: sRGB encode only (tilt-shift already composited the bloom)
     this.mat = _fsMat(
-      'uniform sampler2D tSrc; uniform sampler2D tBloom; uniform float uBloom; varying vec2 vUv;' +
-      'void main(){ vec3 col = texture2D(tSrc, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloom;' +
+      'uniform sampler2D tSrc; varying vec2 vUv;' +
+      'void main(){ vec3 col = texture2D(tSrc, vUv).rgb;' +
       ' col = max(col, vec3(0.0));' +
       ' float lum = dot(col, vec3(0.299,0.587,0.114)); col = mix(vec3(lum), col, 1.05);' +
       ' vec3 a = col * 12.92; vec3 b = 1.055 * pow(col, vec3(1.0/2.4)) - 0.055;' +
       ' vec3 srgb = mix(a, b, step(vec3(0.0031308), col));' +
       ' gl_FragColor = vec4(srgb, 1.0); }',
-      { tSrc: { value: null }, tBloom: { value: null }, uBloom: { value: 0.22 } });
+      { tSrc: { value: null } });
     this.mesh = new THREE.Mesh(_fsGeo, this.mat);
     this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
   }
-  render(r, read, bloomTex) {
+  render(r, read) {
     this.mat.uniforms.tSrc.value = read.texture;
-    this.mat.uniforms.tBloom.value = bloomTex;
     r.setRenderTarget(null); r.render(this.fsScene, _fsCam);
   }
 }
@@ -427,6 +462,7 @@ class EffectComposer {
   constructor(r) {
     this.renderer = r;
     this.renderPass = null; this.bloomPass = null;
+    this.tiltPass = null;
     this.outputPass = null;
     this.enabled = true; this._ok = true;
     try {
@@ -440,6 +476,7 @@ class EffectComposer {
         return rt;
       };
       this.rtScene = mk(sz.x, sz.y, true);
+      this.rtTilt = mk(sz.x, sz.y, false);
       this.rtBloomA = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
       this.rtBloomB = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
     } catch (e) { this._ok = false; }
@@ -447,6 +484,7 @@ class EffectComposer {
   addPass(p) {
     if (p instanceof RenderPass) this.renderPass = p;
     else if (p instanceof UnrealBloomPass) this.bloomPass = p;
+    else if (p instanceof TiltShiftPass) this.tiltPass = p;
     else if (p instanceof OutputPass) this.outputPass = p;
     return this;
   }
@@ -456,6 +494,7 @@ class EffectComposer {
       if (rt.depthTexture) { rt.depthTexture.image.width = Math.max(2, ww | 0); rt.depthTexture.image.height = Math.max(2, hh | 0); }
     };
     if (this.rtScene) rSet(this.rtScene, w, h);
+    if (this.rtTilt) rSet(this.rtTilt, w, h);
     if (this.rtBloomA) rSet(this.rtBloomA, w / 2, h / 2);
     if (this.rtBloomB) rSet(this.rtBloomB, w / 2, h / 2);
   }
@@ -465,7 +504,8 @@ class EffectComposer {
       this.renderPass.render(this.renderer, this.rtScene);
       let bloomTex = null;
       if (this.bloomPass) { this.bloomPass.render(this.renderer, this.rtScene, this.rtBloomA, this.rtBloomB); bloomTex = this.bloomPass.bloomTex; }
-      if (this.outputPass) this.outputPass.render(this.renderer, this.rtScene, bloomTex || this.rtBloomA.texture);
+      if (this.tiltPass) this.tiltPass.render(this.renderer, this.rtScene, this.rtTilt, bloomTex || this.rtBloomA.texture);
+      if (this.outputPass) this.outputPass.render(this.renderer, this.rtTilt);
       else { this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
     } catch (e) { this.enabled = false; this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
   }
@@ -475,6 +515,7 @@ try {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(0.22, 0.85));
+  composer.addPass(new TiltShiftPass());
   composer.addPass(new OutputPass());
 } catch (e) { composer = null; }
 
@@ -1257,16 +1298,18 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     bloom.name = 'leafhat';
     tarsiusBody.add(bloom);
   }
-  // tiny green leaf hat + colorful bandana for the little adventurer
-  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const hat = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 14), hatM);
-  hat.position.set(-0.08, 2.28, -0.02); hat.scale.set(1.15, 0.45, 1.15);
-  hat.rotation.z = 0.22; hat.castShadow = true;
-  tarsiusBody.add(hat);
-  const hatTip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), hatM);
-  hatTip.position.set(-0.42, 2.42, -0.02); hatTip.scale.set(1.5, 0.45, 0.8);
-  hatTip.rotation.z = 0.55; hatTip.castShadow = true;
-  tarsiusBody.add(hatTip);
+  // tiny straw hat with a red band for the little adventurer
+  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe3c06a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const bandHM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.62, 0.09, 22), hatM);
+  brim.position.set(-0.06, 2.22, -0.02); brim.rotation.z = 0.14; brim.castShadow = true;
+  tarsiusBody.add(brim);
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 14), hatM);
+  crown.position.set(-0.08, 2.38, -0.02); crown.scale.set(1, 0.75, 1); crown.castShadow = true;
+  tarsiusBody.add(crown);
+  const hatBand = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.06, 10, 22), bandHM);
+  hatBand.position.set(-0.08, 2.3, -0.02); hatBand.rotation.x = Math.PI / 2 - 0.14;
+  tarsiusBody.add(hatBand);
   const bandM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.13, 12, 24), bandM);
   band.position.set(0, 0.62, 0.1); band.rotation.x = 1.25; band.rotation.z = 0.2;
@@ -1435,7 +1478,28 @@ const G = {
 };
 try { G.best = +(localStorage.getItem('gunbatte-balls-best') || 0); } catch { /* private mode */ }
 
+const activeColors = () => {
+  const set = new Set();
+  for (const b of G.balls) set.add(b.color);
+  return set.size ? [...set] : [...Array(COLORS_N).keys()];
+};
+// Path spawns are always fully random over every color — runs of same-color
+// balls happen by chance, never forced.
+// Only the shooter's dealt balls are constrained (see dealColor).
 const randColor = () => (Math.random() * COLORS_N) | 0;
+// The shooter only deals colors that actually exist on the path right now,
+// so late-game you never get stuck holding a dead color nobody can match.
+const dealColor = () => {
+  const act = activeColors();
+  return act[(Math.random() * act.length) | 0];
+};
+// If pops wiped out a color entirely, re-deal any held ball of that color.
+function sanitizeHeld() {
+  if (!G.balls.length) return;
+  const act = activeColors();
+  if (!act.includes(G.cur)) G.cur = act[(Math.random() * act.length) | 0];
+  if (!act.includes(G.nxt)) G.nxt = act[(Math.random() * act.length) | 0];
+}
 const randPower = () => ['bomb', 'slow', 'rev'][(Math.random() * 3) | 0];
 const pointAt = s => curve.getPointAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
 const tangentAt = s => curve.getTangentAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
@@ -1575,6 +1639,7 @@ function triggerPower(type, pos) {
     showBanner('REWINDSEED!', 'time rolls back…');
     floater('+REWIND', pos, true);
   }
+  sanitizeHeld();
   bumpScore(); updateHUD(); checkWin();
 }
 
@@ -1595,12 +1660,20 @@ function popCheck(startIdx) {
     if (n >= 4) { shockwave(mid, PALETTE[c], 3.5); G.shake = Math.min(1, G.shake + 0.35); }
     const gained = n * 10 * G.combo;
     G.score += gained; G.destroyed += n;
+    // Zuma-style breather: nudge the whole chain back so the player gains room
+    // (tail stays glued at s=0 instead of piling up past the portal).
+    if (b.length) {
+      for (const x of b) x.s -= 1.2;
+      const tail = b[b.length - 1].s;
+      if (tail < 0) for (const x of b) x.s -= tail;
+    }
     floater(`+${gained}`, mid, n >= 4);
     if (G.combo >= 2) floater(`COMBO ×${G.combo}`, mid.clone().add(new THREE.Vector3(0, 1, 0)));
     G.combo++; G.maxCombo = Math.max(G.maxCombo, G.combo);
     G.happy = 0.7;
     sfx(n >= 4 ? 'big' : 'pop');
     removed.forEach(r => { if (r.power) triggerPower(r.power, r.mesh.position); });
+    sanitizeHeld();
     bumpScore(); updateHUD(); checkWin();
     return true;
   }
@@ -1626,7 +1699,7 @@ function shoot() {
   G.recoil = 1; G.flash = 0.09;
   G.shots++;
   sfx('shoot');
-  G.cur = G.nxt; G.nxt = randColor();
+  G.cur = G.nxt; G.nxt = dealColor();
   updateHUD();
 }
 function insertShot(proj, hitIdx) {
@@ -1724,12 +1797,14 @@ function resetGame() {
     streak: 0, bestStreak: 0, shots: 0, hits: 0, powersUsed: 0,
     playTime: 0, shootCD: 0, slowT: 0, revT: 0, shake: 0,
     danger: false, heartT: 0, paused: false, introT: 1.8,
-    status: 'intro', cur: randColor(), nxt: randColor(),
+    status: 'intro', cur: 0, nxt: 1,
   });
   $('end-overlay').classList.add('hidden');
   $('pause-overlay').classList.add('hidden');
   for (let i = 0; i < 10; i++) spawnBall(14 - i * SPACING, randColor(), i === 5 ? 'bomb' : null);
   G.spawned = 10;
+  // Deal the shooter's seeds from the freshly spawned path so both are live colors.
+  G.cur = dealColor(); G.nxt = dealColor();
   showBanner('LEVEL 1', 'Koholint Island — defend the Skull Cave!');
   updateHUD();
 }
@@ -1748,33 +1823,56 @@ function toggleMute() {
   $('mute-btn').classList.toggle('off', G.muted);
 }
 
-/* ---------- input ---------- */
+/* ---------- input: mouse + touch ---------- */
 const ray = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.6);
 const mouseNDC = new THREE.Vector2();
-addEventListener('pointermove', e => {
-  mouseNDC.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+function setAimFromClient(cx, cy) {
+  mouseNDC.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
   ray.setFromCamera(mouseNDC, camera);
   const pt = new THREE.Vector3();
   if (ray.ray.intersectPlane(groundPlane, pt)) {
     G.aim = Math.atan2(pt.x - SHOOTER_POS.x, pt.z - SHOOTER_POS.z);
   }
+}
+function doSwap() {
+  if (G.status !== 'playing' || G.paused) return;
+  const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD();
+}
+// Touch: drag on the island to aim, release to shoot (so aiming never
+// misfires). Mouse keeps the classic move-to-aim, click-to-shoot.
+let touchAimId = null;
+addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    if (e.pointerId !== touchAimId) return;
+  }
+  setAimFromClient(e.clientX, e.clientY);
 });
 addEventListener('pointerdown', e => {
-  if (e.target.closest('button') || e.target.closest('.card')) return;
+  if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
   audio();
-  if (e.button === 2) {
-    if (G.status !== 'playing') return;
-    const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD(); return;
+  if (e.button === 2) { doSwap(); return; }
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    touchAimId = e.pointerId;
+    setAimFromClient(e.clientX, e.clientY);
+    return;
   }
+  setAimFromClient(e.clientX, e.clientY);
   shoot();
 });
+addEventListener('pointerup', e => {
+  if (e.pointerId !== touchAimId) return;
+  touchAimId = null;
+  if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
+  setAimFromClient(e.clientX, e.clientY);
+  shoot();
+});
+addEventListener('pointercancel', e => { if (e.pointerId === touchAimId) touchAimId = null; });
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
-    if (G.status !== 'playing' || G.paused) return;
-    const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD();
+    doSwap();
   } else if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   else if (e.code === 'KeyM') toggleMute();
 });
@@ -1795,7 +1893,15 @@ $('restart-btn').onclick = () => { sfx('click'); resetGame(); };
 $('restart-btn2').onclick = () => { sfx('click'); togglePause(false); resetGame(); };
 $('resume-btn').onclick = () => togglePause(false);
 $('pause-btn').onclick = () => togglePause();
+$('swap-btn').onclick = () => { audio(); doSwap(); };
+$('shooter-box').onclick = () => { audio(); doSwap(); };
 $('mute-btn').onclick = () => { audio(); toggleMute(); sfx('click'); };
+// Touch devices get a gesture-appropriate hint (drag/release/swap button).
+try {
+  if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) {
+    $('hint').innerHTML = 'Drag to aim • Release to shoot • <b>⇄</b> to swap';
+  }
+} catch { /* ignore */ }
 addEventListener('resize', () => {
   updateOrthoCamera();
   renderer.setSize(innerWidth, innerHeight);
@@ -2086,6 +2192,7 @@ function step(dt, rawDt) {
       // chain movement
       const b = G.balls;
       if (b.length) {
+        const joins = [];
         b[0].s += spd * dt;
         for (let i = 1; i < b.length; i++) {
           const dist = b[i - 1].s - b[i].s;
@@ -2095,6 +2202,8 @@ function step(dt, rawDt) {
             if (b[i - 1].s - b[i].s < SPACING * 0.9) b[i].s = b[i - 1].s - SPACING * 0.9;
           } else if (dist > SPACING + 0.06) {
             b[i].s += Math.min(5.0 * dt, dist - SPACING); // magnet catch-up
+            // two segments just assembled into one group: a 3+ run may be complete
+            if (dist > SPACING * 1.6 && (b[i - 1].s - b[i].s) <= SPACING * 1.6) joins.push(b[i]);
           } else {
             b[i].s += spd * dt;
             if (b[i - 1].s - b[i].s < SPACING) b[i].s = b[i - 1].s - SPACING;
@@ -2109,19 +2218,32 @@ function step(dt, rawDt) {
           const ax = new THREE.Vector3(-tmpAxis.z, 0, tmpAxis.x).normalize();
           x.core.rotateOnWorldAxis(ax, (spd * dt) / BALL_R);
         });
-        const headR = b[0].s / curveLen;
-        const wasDanger = G.danger;
-        G.danger = headR > 0.72;
-        if (G.danger && !wasDanger) {
-          showBanner('THE SKULL STIRS!', 'hurry, little guardian!');
-          sfx('warn');
+        // Zuma-style chaining: freshly assembled segments may complete a 3+ run
+        // (object refs re-resolved since pops splice the array; each pop also
+        // nudges the chain back, so combos buy the player real room).
+        if (!reversing) {
+          for (const ball of joins) {
+            const idx = b.indexOf(ball);
+            if (idx >= 0) popCheck(idx);
+            if (!b.length) break;
+          }
         }
-        if (G.danger) {
-          G.heartT -= dt;
-          if (G.heartT <= 0) { G.heartT = 1.6; sfx('heart'); }
+        if (!b.length) { updateHUD(); }
+        else {
+          const headR = b[0].s / curveLen;
+          const wasDanger = G.danger;
+          G.danger = headR > 0.72;
+          if (G.danger && !wasDanger) {
+            showBanner('THE SKULL STIRS!', 'hurry, little guardian!');
+            sfx('warn');
+          }
+          if (G.danger) {
+            G.heartT -= dt;
+            if (G.heartT <= 0) { G.heartT = 1.6; sfx('heart'); }
+          }
+          if (!reversing && b[0].s >= curveLen - 1.2) endGame(false);
+          updateHUD();
         }
-        if (!reversing && b[0].s >= curveLen - 1.2) endGame(false);
-        updateHUD();
       }
       // projectiles
       for (let i = G.projectiles.length - 1; i >= 0; i--) {
