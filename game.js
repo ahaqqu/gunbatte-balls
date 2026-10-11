@@ -1,31 +1,48 @@
 import * as THREE from 'three';
+import {
+  BALL_R as LV_BALL_R, SPACING as LV_SPACING,
+  DIFFS as LV_DIFFS, PALETTE as LV_PALETTE, PALETTE_CSS as LV_PALETTE_CSS,
+  getLevel, activeLevelId, listLevels,
+} from './src/levels.js';
+import { POWER_DEFS } from './src/powers.js';
+import {
+  createState, getActiveColors, randColor as mechRandColor,
+  dealColor as mechDealColor, sanitizeHeld as mechSanitize,
+  randPower as mechRandPower, baseSpeedFor,
+  pointAt as mechPointAt, tangentAt as mechTangentAt,
+  spawnBall as mechSpawnBall, popCheck as mechPopCheck,
+  insertShot as mechInsertShot, triggerPower as mechTrigger,
+} from './src/mechanics.js';
+import { makeBallMesh as assetsMakeBallMesh, toy, toyGlow, sculpt, roundRockGeo, R } from './src/assets.js';
+import { buildCurve, perchVectors, createNearPathChecker } from './src/environment.js';
 
 /* ============================================================
    GUNBATTE BALLS — Koholint Island  (demo v2, AAA pass)
    Toy-diorama marble shooter: power seeds, streaks, danger mode,
    living island, procedural music. One level, launch-ready demo.
    "Ganbatte" = do your best!
+   Architecture:
+     - src/assets.js     → reusable toy/ marble/ texture factories
+     - src/mechanics.js  → Zuma chain rules (level-parameterized)
+     - src/powers.js     → pluggable power-seed registry
+     - src/levels.js     → declarative island + ruleset per level
+     - src/environment.js→ scene builder (same assets, any level)
+   game.js is the composition root: renderer + loop + input + HUD.
    ============================================================ */
 
-const BALL_R = 0.72, SPACING = 1.5;
-const TOTAL_BALLS = 40, COLORS_N = 4;
-const DIFFS = { chill: 0.68, normal: 1.0, spicy: 1.28 };
-const PALETTE = [0xe63946, 0x4361ee, 0x2dc653, 0xffc700];
-const PALETTE_CSS = ['#e63946', '#4361ee', '#2dc653', '#ffc700'];
-const POWERS = {
-  bomb: { letter: 'B', bg: '#2b2d42', name: 'BOOMSEED' },
-  slow: { letter: 'S', bg: '#4361ee', name: 'CHILLSEED' },
-  rev:  { letter: 'R', bg: '#9d4edd', name: 'REWINDSEED' },
-};
-const PERCHES = [
-  new THREE.Vector3(0, 0.6, 1.8),    // home tree (central, near the old stump)
-  new THREE.Vector3(-8, 0.6, -5.5),  // west tree (between the south & middle runs)
-  new THREE.Vector3(9, 0.6, -6),     // east tree (between the south & middle runs)
-  new THREE.Vector3(0, 0.6, 9.5),    // north tree (between the top run & the skull)
-];
+/* Active island (?level=id, defaults to koholint). All rules + layout
+   below derive from this single LevelDef — new islands reuse assets. */
+const LEVEL = getLevel(activeLevelId());
+const BALL_R = LV_BALL_R, SPACING = LV_SPACING;
+const TOTAL_BALLS = LEVEL.totalBalls, COLORS_N = LEVEL.colorsN;
+const DIFFS = LV_DIFFS;
+const PALETTE = LV_PALETTE;
+const PALETTE_CSS = LV_PALETTE_CSS;
+const POWERS = POWER_DEFS;
+const PERCHES = perchVectors(LEVEL);
 const SHOOTER_POS = PERCHES[0]; // legacy anchor; the live muzzle origin is tarsius.position
-const LEAP_DUR = 0.5; // seconds for a tree-to-tree leap
-const baseSpeed = () => (0.95 + 0.4 * (G.spawned / TOTAL_BALLS)) * (DIFFS[G.diff] || 1);
+const LEAP_DUR = LEVEL.mechanics.leapDur;
+const baseSpeed = () => baseSpeedFor(G, LEVEL, DIFFS);
 
 /* ==================== AUDIO (all procedural) ==================== */
 let AC = null, master = null, noiseBuf = null;
@@ -164,24 +181,9 @@ sun.shadow.radius = 5;
 scene.add(sun);
 scene.add(sun.target); sun.target.position.set(0, 0, 0);
 
-/* ---------------- Toy helpers: tactile premium painted wood / matte plastic ----------------
-   Solid objects use MeshStandardMaterial/MeshPhysicalMaterial only (no Basic):
-   soft matte tactility (roughness 0.6, subtle clearcoat 0.3). Marbles keep a
-   satin marble sheen with cheap specular highlights (no envmaps). */
-function toy(color, o = {}) {
-  return new THREE.MeshPhysicalMaterial({
-    color, roughness: 0.2, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.1,
-    ...o, flatShading: true,
-  });
-}
-function toyGlow(color, o = {}) {
-  return new THREE.MeshPhysicalMaterial({
-    color, emissive: color, emissiveIntensity: 0.7,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1,
-    ...o, flatShading: true,
-  });
-}
+/* ---------------- Toy helpers (canonical in src/assets.js) ----------------
+   toy / toyGlow / sculpt / roundRockGeo / R are shared asset factories:
+   imported above so every level reuses the exact same toy look. */
 /* Glassy toy-marble faces: hand-painted swirl + icon per color (equirect canvas).
    Red = heart, Blue = water spiral, Green = leaf, Yellow = star. */
 function paintBallFace(x, s, kind) {
@@ -240,27 +242,11 @@ function marbleMat(color) {
     specularIntensity: 1.0, emissive: color, emissiveIntensity: 0.35,
   });
 }
-/* Hand-sculpted wobble: jitter vertices with position-hashed offsets so duplicated
-   polyhedron verts stay welded (no cracks), then recompute smooth normals. */
-function sculpt(geo, amt = 0.07) {
-  const pos = geo.attributes.position;
-  const seen = new Map();
-  for (let i = 0; i < pos.count; i++) {
-    const k = pos.getX(i).toFixed(3) + ',' + pos.getY(i).toFixed(3) + ',' + pos.getZ(i).toFixed(3);
-    let d = seen.get(k);
-    if (!d) {
-      d = [(Math.random() - 0.5) * 2 * amt, (Math.random() - 0.5) * 2 * amt, (Math.random() - 0.5) * 2 * amt];
-      seen.set(k, d);
-    }
-    pos.setXYZ(i, pos.getX(i) + d[0], pos.getY(i) + d[1], pos.getZ(i) + d[2]);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-/* Softly rounded hand-sculpted rock (no sharp low-poly). */
-function roundRockGeo(r) { return sculpt(new THREE.IcosahedronGeometry(r, 1), 0.08); }
+/* Hand-sculpted wobble lives in src/assets.js (sculpt) — see import above. */
+/* Softly rounded hand-sculpted rock lives in src/assets.js (roundRockGeo). */
 
-/* ---------------- Procedural toy textures (canvas: zero assets, stays sharp) ---------------- */
+/* ---------------- Procedural toy textures (canvas: zero assets, stays sharp) ----------------
+   R (random helper) is the shared asset factory from src/assets.js. */
 function canvasTex(size, painter, rx = 1, ry = 1) {
   const c = document.createElement('canvas'); c.width = c.height = size;
   painter(c.getContext('2d'), size);
@@ -269,7 +255,6 @@ function canvasTex(size, painter, rx = 1, ry = 1) {
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   return t;
 }
-function R(a, b) { return a + Math.random() * (b - a); }
 function speckle(x, s, n, cols, aMin, aMax, rMin, rMax) {
   for (let i = 0; i < n; i++) {
     x.globalAlpha = R(aMin, aMax);
@@ -658,17 +643,9 @@ const island = new THREE.Group(); scene.add(island);
   island.add(rim);
 }
 
-/* ---- marble path ---- */
-const pathPts2D = [
-  [-19.5, -11], [-16.5, -9.5], [-13, -10.5], [-7, -10], [-1, -10.5], [5, -10], [11, -9.5],
-  [15, -8], [16.5, -5.5], [15.5, -3], [12, -1.5], [7, -1], [1, -1.3],
-  [-5, -0.8], [-11, -1.2], [-15, -0.5], [-16.5, 1.5], [-14, 3.5], [-9, 4.5],
-  [-3, 5], [3, 4.6], [9, 5], [13, 5.8], [15, 7.5], [13.5, 9.5], [12, 11],
-  [10, 13], [7, 14.5],
-];
-const curve = new THREE.CatmullRomCurve3(
-  pathPts2D.map(([x, z]) => new THREE.Vector3(x, 0.6, z)), false, 'catmullrom', 0.35);
-const curveLen = curve.getLength();
+/* ---- marble path (from the active LevelDef — same builder, any island) ---- */
+const pathPts2D = LEVEL.pathPts2D;
+const { curve, curveLen } = buildCurve(LEVEL);
 {
   // worn inset border: darker sand rim peeking under the road edges
   const tube0 = new THREE.TubeGeometry(curve, 220, 1.14, 12, false);
@@ -699,8 +676,11 @@ const curveLen = curve.getLength();
     new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0x14101f , emissive: 0x14101f, emissiveIntensity: 0.85}));
   hole.position.set(0, 0.9, 0.9);
   portal.add(m1, m2, mtop, hole);
-  portal.position.copy(start).add(new THREE.Vector3(-0.6, 0, 0));
-  portal.rotation.y = Math.PI / 2.3;
+  portal.position.copy(start).add(new THREE.Vector3(...LEVEL.portalOffset));
+  { // face the exit hole along the starting tangent so marbles pour onto the road
+    const st = curve.getTangentAt(0);
+    portal.rotation.y = Math.atan2(st.x, st.z);
+  }
   scene.add(portal);
   groundBlob(start.x - 0.6, start.z, 2.3, 0.28);
 }
@@ -788,11 +768,14 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10),
     new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x1a1a2e, emissive: 0x1a1a2e, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1}));
   nose.position.set(0, 3.35, 2.25); nose.scale.set(1, 1.2, 0.6); g.add(nose);
-  g.position.copy(skullPos).add(new THREE.Vector3(0.4, 0, 0.5));
-  g.rotation.y = -0.7;
+  g.position.copy(skullPos).add(new THREE.Vector3(...LEVEL.skullOffset));
+  { // mouth + eyes face back down the road so the skull greets its dinner
+    const prev = curve.getPointAt(0.985);
+    g.lookAt(prev.x, g.position.y, prev.z);
+  }
   scene.add(g);
   skullCave = g; skullMound = mound;
-  groundBlob(skullPos.x + 0.4, skullPos.z + 0.5, 3.4, 0.3);
+  groundBlob(skullPos.x + LEVEL.skullOffset[0], skullPos.z + LEVEL.skullOffset[2], 3.4, 0.3);
 }
 const smokes = [];
 {
@@ -821,10 +804,10 @@ const smokes = [];
     const d = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), spotM);
     d.position.set(ox, oy, oz); shrine.add(d);
   });
-  shrine.position.set(18.5, 0.6, 2.5);
-  shrine.rotation.y = -0.5;
+  shrine.position.set(LEVEL.shrine.x, 0.6, LEVEL.shrine.z);
+  shrine.rotation.y = LEVEL.shrine.rotY;
   scene.add(shrine);
-  groundBlob(18.5, 2.5, 1.1, 0.24);
+  groundBlob(LEVEL.shrine.x, LEVEL.shrine.z, 1.1, 0.24);
 }
 
 /* ---- toy decorations ---- */
@@ -913,19 +896,9 @@ function pinwheel(x, z, c) {
   scene.add(g);
   groundBlob(x, z, 0.7, 0.22);
 }
-function nearPath(x, z, d = 1.9) {
-  for (let i = 0; i <= 40; i++) {
-    const p = curve.getPointAt(i / 40);
-    if ((p.x - x) ** 2 + (p.z - z) ** 2 < d * d) return true;
-  }
-  if ((x - SHOOTER_POS.x) ** 2 + (z - SHOOTER_POS.z) ** 2 < 25) return true; // clear stage round the star
-  for (const p of PERCHES) if ((x - p.x) ** 2 + (z - p.z) ** 2 < 12) return true; // room round every perch tree
-  if ((x - 7.4) ** 2 + (z - 15) ** 2 < 14) return true; // skull cave approach
-  if ((x + 19.5) ** 2 + (z + 11) ** 2 < 9) return true; // marble portal
-  if ((x - 18.5) ** 2 + (z - 2.5) ** 2 < 4) return true; // egg shrine
-  if ((x + 4.5) ** 2 + (z - 8.6) ** 2 < 10) return true; // house plot stays clear
-  return false;
-}
+/* Scatter guard: path + clearings, from the active LevelDef via
+   src/environment.js (same helper every island uses). */
+const nearPath = createNearPathChecker(LEVEL, curve, SHOOTER_POS);
 /* ---- perch trees: climbable pines the tarsius clings to and leaps between ----
    Each gets a glow ring (active perch pulses green) + a generous invisible
    hit-cylinder so tapping the tree (mouse or touch) orders a leap. */
@@ -989,26 +962,26 @@ const perchRings = [], perchHit = [];
 }
 {
   let placed = 0, guard = 0;
-  while (placed < 32 && guard++ < 900) {
+  while (placed < LEVEL.scatter.trees && guard++ < 900) {
     const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 21;
     const x = Math.cos(a) * r, z = Math.sin(a) * r * 0.95;
     if (nearPath(x, z)) continue;
     chibiTree(x, z, 0.8 + Math.random() * 0.7); placed++;
   }
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < LEVEL.scatter.rocks; i++) {
     const a = Math.random() * 6.28, r = 4 + Math.random() * 18;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.4)) continue;
     rock(x, z, 0.7 + Math.random() * 0.9);
   }
   const fc = [0xff5d8f, 0xffca3a, 0xff595e, 0xffffff, 0xc77dff];
-  for (let i = 0; i < 54; i++) {
+  for (let i = 0; i < LEVEL.scatter.flowers; i++) {
     const a = Math.random() * 6.28, r = 2.5 + Math.random() * 21;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.2)) continue;
     flower(x, z, fc[i % fc.length]);
   }
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < LEVEL.scatter.grass; i++) {
     const a = Math.random() * 6.28, r = 2 + Math.random() * 22;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.0)) continue;
@@ -1067,9 +1040,9 @@ const perchRings = [], perchHit = [];
   chim.position.set(-0.85, 2.35, -0.35); chim.castShadow = true; house.add(chim);
   const chimCap = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), roofDark);
   chimCap.position.set(-0.85, 2.9, -0.35); chimCap.scale.y = 0.6; house.add(chimCap);
-  house.position.set(-4.5, 0.5, 8.6); house.rotation.y = 0.4;
+  house.position.set(LEVEL.house.x, 0.5, LEVEL.house.z); house.rotation.y = LEVEL.house.rotY;
   scene.add(house);
-  groundBlob(-4.5, 8.6, 2.5, 0.28);
+  groundBlob(LEVEL.house.x, LEVEL.house.z, 2.5, 0.28);
   // torch with round teardrop flame (no sharp cones)
   const torch = new THREE.Group();
   const tpole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 1.8, 14),
@@ -1086,9 +1059,9 @@ const perchRings = [], perchHit = [];
   core.position.y = 2.1; torch.add(core);
   const tl = new THREE.PointLight(0xff9d3c, 6, 11, 1.6);
   tl.position.y = 2.3; tl.name = 'torchlight'; torch.add(tl);
-  torch.position.set(-1.8, 0.5, 7.4);
+  torch.position.set(LEVEL.torch.x, 0.5, LEVEL.torch.z);
   scene.add(torch);
-  groundBlob(-1.8, 7.4, 0.9, 0.25);
+  groundBlob(LEVEL.torch.x, LEVEL.torch.z, 0.9, 0.25);
   // crafted trail fencing: chunky posts + sagging rope rails beside the track
   {
     const postM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
@@ -1096,7 +1069,7 @@ const perchRings = [], perchHit = [];
     const postGeo = new THREE.CylinderGeometry(0.09, 0.12, 0.95, 8);
     const knobGeo = new THREE.SphereGeometry(0.12, 10, 8);
     // [tStart, tEnd, side] stretches of path to fence (offset clear of rolling balls)
-    [[0.10, 0.30, 1], [0.36, 0.52, -1], [0.62, 0.80, 1]].forEach(([t0, t1, side]) => {
+    LEVEL.fence.forEach(([t0, t1, side]) => {
       const tops = [];
       const n = Math.max(3, Math.round(((t1 - t0) * curveLen) / 1.6));
       for (let k = 0; k <= n; k++) {
@@ -1131,8 +1104,7 @@ const perchRings = [], perchHit = [];
       scene.add(rope);
     });
   }
-  pinwheel(6.5, -5.3, 0xe63946);
-  pinwheel(-8.5, 6.8, 0x4361ee);
+  LEVEL.pinwheels.forEach(([px, pz, pc]) => pinwheel(px, pz, pc));
 }
 /* clouds anchored at frame edges (parallax puffs, never cover play) */
 const clouds = [];
@@ -1486,6 +1458,8 @@ const ringGeo = new THREE.TorusGeometry(0.8, 0.11, 8, 28);
 const ringMat = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffc700, emissive: 0xffb700, emissiveIntensity: 0.9});
 const wingGeo = new THREE.SphereGeometry(0.2, 12, 10);
 const trailGeo = new THREE.SphereGeometry(0.2, 14, 10);
+/* Shared marble kit: same assets, every level (path/projectiles/orbs). */
+const kit = { ballGeo, ballMats, hiGeo, hiMat, ringGeo, ringMat, wingGeo, trailGeo };
 
 function letterSprite(letter, bg) {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -1513,63 +1487,36 @@ const G = {
 };
 try { G.best = +(localStorage.getItem('gunbatte-balls-best') || 0); } catch { /* private mode */ }
 
-const activeColors = () => {
-  const set = new Set();
-  for (const b of G.balls) set.add(b.color);
-  return set.size ? [...set] : [...Array(COLORS_N).keys()];
-};
+/* Mechanics delegates: rules live in src/mechanics.js (parameterized by
+   LEVEL); these thin wrappers preserve the historic globals/tests. */
+const activeColors = () => getActiveColors(G.balls, LEVEL.colorsN);
 // Path spawns are always fully random over every color — runs of same-color
 // balls happen by chance, never forced.
 // Only the shooter's dealt balls are constrained (see dealColor).
-const randColor = () => (Math.random() * COLORS_N) | 0;
+const randColor = () => mechRandColor(LEVEL);
 // The shooter only deals colors that actually exist on the path right now,
 // so late-game you never get stuck holding a dead color nobody can match.
-const dealColor = () => {
-  const act = activeColors();
-  return act[(Math.random() * act.length) | 0];
-};
+const dealColor = () => mechDealColor(G.balls, LEVEL);
 // If pops wiped out a color entirely, re-deal any held ball of that color.
-function sanitizeHeld() {
-  if (!G.balls.length) return;
-  const act = activeColors();
-  if (!act.includes(G.cur)) G.cur = act[(Math.random() * act.length) | 0];
-  if (!act.includes(G.nxt)) G.nxt = act[(Math.random() * act.length) | 0];
+function sanitizeHeld() { mechSanitize(G, LEVEL); }
+const randPower = () => mechRandPower(LEVEL);
+const pointAt = s => mechPointAt(curve, curveLen, s);
+const tangentAt = s => mechTangentAt(curve, curveLen, s);
+
+/* Live wiring for the mechanics engine (scene + HUD callbacks). */
+function mechCtx() {
+  return {
+    G, level: LEVEL, curve, curveLen, scene, kit, powerDefs: POWERS,
+    burst, shockwave, floater, showBanner, sfx,
+    updateHUD, bumpScore, checkWin, PALETTE,
+  };
 }
-const randPower = () => ['bomb', 'slow', 'rev'][(Math.random() * 3) | 0];
-const pointAt = s => curve.getPointAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
-const tangentAt = s => curve.getTangentAt(THREE.MathUtils.clamp(s / curveLen, 0, 1));
 
 function makeBallMesh(color, power) {
-  const mesh = new THREE.Group();
-  const core = new THREE.Mesh(ballGeo, ballMats[color]);
-  core.castShadow = true;
-  const hi = new THREE.Mesh(hiGeo, hiMat);
-  hi.position.set(-0.23, 0.26, 0.46);
-  mesh.add(core, hi);
-  if (power) {
-    // chunky golden power rim + tiny wings so seed-balls stand out
-    const r = new THREE.Mesh(ringGeo, ringMat);
-    r.rotation.x = Math.PI / 2.3;
-    mesh.add(r);
-    [-1, 1].forEach(s => {
-      const wing = new THREE.Mesh(wingGeo, ringMat);
-      wing.position.set(s * 0.8, 0.12, 0);
-      wing.scale.set(1.3, 0.45, 0.6);
-      wing.rotation.z = s * 0.45;
-      mesh.add(wing);
-    });
-    const sp = letterSprite(POWERS[power].letter, POWERS[power].bg);
-    sp.position.y = 1.25;
-    mesh.add(sp);
-  }
-  return mesh;
+  return assetsMakeBallMesh(kit, POWERS, color, power);
 }
 function spawnBall(s = 0, color = randColor(), power = null) {
-  const mesh = makeBallMesh(color, power);
-  const p = pointAt(s); mesh.position.copy(p); mesh.position.y = 1.15;
-  scene.add(mesh);
-  G.balls.push({ s, color, power, mesh, core: mesh.children[0] });
-  G.balls.sort((a, b) => b.s - a.s);
+  mechSpawnBall(mechCtx(), s, color, power);
 }
 
 /* ---------- HUD / feedback ---------- */
@@ -1641,85 +1588,21 @@ function shockwave(pos, color = 0xffffff, max = 4) {
   G.rings.push({ m, t: 0, max });
 }
 
-/* ---------- powers ---------- */
+/* ---------- powers (registry in src/powers.js; per-level allow-list) ---------- */
 function triggerPower(type, pos) {
-  G.powersUsed++;
-  const label = POWERS[type].name;
-  if (type === 'bomb') {
-    burst(pos, 0, 26, 12); burst(pos, 3, 18, 12);
-    shockwave(pos, 0xff9e00, 5);
-    G.shake = Math.min(1.4, G.shake + 1.0);
-    sfx('bomb');
-    floater('BOOM!', pos, true);
-    const victims = G.balls.filter(b => b.mesh.position.distanceTo(pos) < 5.5).slice(0, 12);
-    victims.forEach(v => {
-      const i = G.balls.indexOf(v);
-      if (i >= 0) {
-        burst(v.mesh.position, v.color, 8, 7);
-        scene.remove(v.mesh); G.balls.splice(i, 1);
-        G.destroyed++; G.score += 15;
-      }
-    });
-    G.score += 10;
-  } else if (type === 'slow') {
-    G.slowT = 8; sfx('power');
-    shockwave(pos, 0x4cc9f0, 4);
-    burst(pos, 1, 16, 7);
-    showBanner('CHILLSEED!', 'the march slows…');
-    floater('+SLOW', pos, true);
-  } else if (type === 'rev') {
-    G.revT = 6; sfx('power');
-    shockwave(pos, 0xf72585, 4);
-    burst(pos, 2, 16, 7);
-    showBanner('REWINDSEED!', 'time rolls back…');
-    floater('+REWIND', pos, true);
-  }
-  sanitizeHeld();
-  bumpScore(); updateHUD(); checkWin();
+  return mechTrigger(mechCtx(), type, pos);
 }
 
-/* ---------- match / insert / shoot ---------- */
+/* ---------- match / insert / shoot (rules in src/mechanics.js) ---------- */
 function popCheck(startIdx) {
-  const b = G.balls;
-  if (!b[startIdx]) return false;
-  const c = b[startIdx].color;
-  let lo = startIdx, hi = startIdx;
-  while (lo - 1 >= 0 && b[lo - 1].color === c && (b[lo - 1].s - b[lo].s) < SPACING * 1.6) lo--;
-  while (hi + 1 < b.length && b[hi + 1].color === c && (b[hi].s - b[hi + 1].s) < SPACING * 1.6) hi++;
-  const n = hi - lo + 1;
-  if (n >= 3) {
-    const mid = b[lo].mesh.position.clone();
-    const removed = b.slice(lo, hi + 1);
-    for (let i = hi; i >= lo; i--) { scene.remove(b[i].mesh); b.splice(i, 1); }
-    burst(mid, c, n >= 4 ? 24 : 14, n >= 4 ? 11 : 8);
-    if (n >= 4) { shockwave(mid, PALETTE[c], 3.5); G.shake = Math.min(1, G.shake + 0.35); }
-    const gained = n * 10 * G.combo;
-    G.score += gained; G.destroyed += n;
-    // Zuma-style breather: nudge the whole chain back so the player gains room
-    // (tail stays glued at s=0 instead of piling up past the portal).
-    if (b.length) {
-      for (const x of b) x.s -= 1.2;
-      const tail = b[b.length - 1].s;
-      if (tail < 0) for (const x of b) x.s -= tail;
-    }
-    floater(`+${gained}`, mid, n >= 4);
-    if (G.combo >= 2) floater(`COMBO ×${G.combo}`, mid.clone().add(new THREE.Vector3(0, 1, 0)));
-    G.combo++; G.maxCombo = Math.max(G.maxCombo, G.combo);
-    G.happy = 0.7;
-    sfx(n >= 4 ? 'big' : 'pop');
-    removed.forEach(r => { if (r.power) triggerPower(r.power, r.mesh.position); });
-    sanitizeHeld();
-    bumpScore(); updateHUD(); checkWin();
-    return true;
-  }
-  return false;
+  return mechPopCheck(mechCtx(), startIdx);
 }
 function checkWin() {
   if (G.status === 'playing' && G.spawned >= TOTAL_BALLS && G.balls.length === 0) endGame(true);
 }
 function shoot() {
   if (G.status !== 'playing' || G.shootCD > 0 || G.paused || G.leapT > 0) return;
-  G.shootCD = 0.22;
+  G.shootCD = LEVEL.mechanics.shootCooldown;
   const dir = new THREE.Vector3(Math.sin(G.aim), 0, Math.cos(G.aim));
   const mp = new THREE.Vector3(); muzzle.getWorldPosition(mp);
   const mesh = makeBallMesh(G.cur, null);
@@ -1730,7 +1613,7 @@ function shoot() {
     const t = new THREE.Mesh(trailGeo, new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: PALETTE[G.cur], emissive: PALETTE[G.cur], emissiveIntensity: 0.85, transparent: true, opacity: 0.5 - i * 0.11 }));
     scene.add(t); trail.push(t);
   }
-  G.projectiles.push({ color: G.cur, pos: mp.clone(), vel: dir.multiplyScalar(26), mesh, core: mesh.children[0], trail, hist: [] });
+  G.projectiles.push({ color: G.cur, pos: mp.clone(), vel: dir.multiplyScalar(LEVEL.mechanics.projectileSpeed), mesh, core: mesh.children[0], trail, hist: [] });
   G.recoil = 1; G.flash = 0.09;
   G.shots++;
   sfx('shoot');
@@ -1738,43 +1621,7 @@ function shoot() {
   updateHUD();
 }
 function insertShot(proj, hitIdx) {
-  const b = G.balls;
-  const hit = b[hitIdx];
-  // power seed: direct hit triggers it (any color), no insert
-  if (hit.power) {
-    const hp = hit.mesh.position.clone(), pw = hit.power;
-    burst(hp, hit.color, 10, 7);
-    scene.remove(hit.mesh); b.splice(hitIdx, 1);
-    G.destroyed++; G.score += 5;
-    floater('+5', hp);
-    triggerPower(pw, hp);
-    G.hits++; G.streak++; G.bestStreak = Math.max(G.bestStreak, G.streak);
-    return;
-  }
-  const tangent = tangentAt(hit.s);
-  const toHit = proj.pos.clone().sub(hit.mesh.position);
-  const ahead = toHit.dot(tangent) > 0;
-  const idx = ahead ? hitIdx : hitIdx + 1;
-  let ns;
-  if (idx === 0) ns = b[0].s + SPACING;
-  else if (idx >= b.length) ns = b[b.length - 1].s - SPACING;
-  else ns = (b[idx - 1].s + b[idx].s) / 2;
-  const mesh = makeBallMesh(proj.color, null);
-  const p = pointAt(ns); mesh.position.copy(p); mesh.position.y = 1.15;
-  scene.add(mesh);
-  b.splice(idx, 0, { s: ns, color: proj.color, power: null, mesh, core: mesh.children[0] });
-  for (let i = idx + 1; i < b.length; i++) {
-    const want = b[i - 1].s - SPACING;
-    if (b[i].s > want) b[i].s = want;
-  }
-  G.hits++; G.streak++; G.bestStreak = Math.max(G.bestStreak, G.streak);
-  if (G.streak > 0 && G.streak % 5 === 0) {
-    G.score += G.streak * 5;
-    floater(`STREAK ×${G.streak}!`, mesh.position.clone(), true);
-    sfx('power');
-  }
-  updateHUD();
-  if (!popCheck(idx)) { G.combo = 1; updateHUD(); }
+  mechInsertShot(mechCtx(), proj, hitIdx);
 }
 function onMiss() {
   if (G.streak >= 3) floater('miss…', new THREE.Vector3(tarsius.position.x, 3, tarsius.position.z));
@@ -1837,11 +1684,15 @@ function resetGame() {
   tarsius.position.copy(PERCHES[0]); tarsius.rotation.y = 0;
   $('end-overlay').classList.add('hidden');
   $('pause-overlay').classList.add('hidden');
-  for (let i = 0; i < 10; i++) spawnBall(14 - i * SPACING, randColor(), i === 5 ? 'bomb' : null);
-  G.spawned = 10;
+  for (let i = 0; i < LEVEL.initialBalls; i++) {
+    const initPw = (i === LEVEL.initialBombIndex && LEVEL.powersAvailable.includes('bomb')) ? 'bomb' : null;
+    spawnBall(LEVEL.initialHeadS - i * SPACING, randColor(), initPw);
+  }
+  G.spawned = LEVEL.initialBalls;
   // Deal the shooter's seeds from the freshly spawned path so both are live colors.
   G.cur = dealColor(); G.nxt = dealColor();
-  showBanner('LEVEL 1', 'Koholint Island — defend the Skull Cave!');
+  showBanner(LEVEL.bannerMain, LEVEL.bannerSub);
+  try { $('subtitle').textContent = `${LEVEL.name} • Lv ${LEVEL.levelNo}`; } catch { /* ignore */ }
   updateHUD();
 }
 function togglePause(force) {
@@ -1948,13 +1799,29 @@ $('start-btn').onclick = () => {
   resetGame(); Music.start();
   try { $('best-line').textContent = 'best: ' + G.best; } catch { /* ignore */ }
 };
-document.querySelectorAll('.diff-btn').forEach(btn => {
+document.querySelectorAll('.diff-btn[data-diff]').forEach(btn => {
   btn.onclick = () => {
     G.diff = btn.dataset.diff;
-    document.querySelectorAll('.diff-btn').forEach(x => x.classList.toggle('sel', x === btn));
+    document.querySelectorAll('.diff-btn[data-diff]').forEach(x => x.classList.toggle('sel', x === btn));
     sfx('click');
   };
 });
+/* Island select: reloads on the chosen LevelDef (?level=id). Same assets
+   + same engine, different environment / powers / mechanics. */
+document.querySelectorAll('.diff-btn[data-level]').forEach(btn => {
+  btn.onclick = () => {
+    sfx('click');
+    try {
+      const u = new URL(location.href);
+      u.searchParams.set('level', btn.dataset.level);
+      location.href = u.toString();
+    } catch { /* ignore */ }
+  };
+});
+try {
+  const cur = LEVEL.id;
+  document.querySelectorAll('.diff-btn[data-level]').forEach(x => x.classList.toggle('sel', x.dataset.level === cur));
+} catch { /* ignore */ }
 $('restart-btn').onclick = () => { sfx('click'); resetGame(); };
 $('restart-btn2').onclick = () => { sfx('click'); togglePause(false); resetGame(); };
 $('resume-btn').onclick = () => togglePause(false);
@@ -2261,20 +2128,21 @@ function step(dt, rawDt) {
       if (G.slowT > 0) G.slowT -= dt;
       if (G.revT > 0) G.revT -= dt;
       const reversing = G.revT > 0;
-      const spd = baseSpeed() * (G.slowT > 0 ? 0.45 : 1) * (reversing ? -0.85 : 1)
-        * (G.danger && !reversing ? 0.85 : 1); // skull toys with its food: final-stand brake
+      const m = LEVEL.mechanics;
+      const spd = baseSpeed() * (G.slowT > 0 ? m.slowFactor : 1) * (reversing ? m.reverseFactor : 1)
+        * (G.danger && !reversing ? m.finalStandBrake : 1); // skull toys with its food: final-stand brake
 
-      // spawner (every 7th marble carries a power seed)
+      // spawner (every Nth marble carries a power seed from this level's mix)
       if (G.spawned < TOTAL_BALLS) {
         spawnAcc += dt;
         const tail = G.balls[G.balls.length - 1];
         const gapOk = !tail || tail.s > SPACING * 1.1;
         if (spawnAcc > (SPACING / Math.max(0.4, baseSpeed())) * 1.35 && gapOk) {
           spawnAcc = 0;
-          const pw = (G.spawned % 7 === 6) ? randPower() : null;
+          const pw = (G.spawned % LEVEL.spawnPowerEvery === LEVEL.spawnPowerEvery - 1) ? randPower() : null;
           spawnBall(0, randColor(), pw);
           G.spawned++;
-          if (pw) floater(POWERS[pw].name + '!', G.balls[G.balls.length - 1].mesh.position);
+          if (pw && POWERS[pw]) floater(POWERS[pw].name + '!', G.balls[G.balls.length - 1].mesh.position);
           updateHUD();
         }
       }
@@ -2282,6 +2150,7 @@ function step(dt, rawDt) {
       const b = G.balls;
       if (b.length) {
         const joins = [];
+        const joinGap = SPACING * m.joinGap;
         b[0].s += spd * dt;
         for (let i = 1; i < b.length; i++) {
           const dist = b[i - 1].s - b[i].s;
@@ -2290,9 +2159,9 @@ function step(dt, rawDt) {
             b[i].s += spd * dt;
             if (b[i - 1].s - b[i].s < SPACING * 0.9) b[i].s = b[i - 1].s - SPACING * 0.9;
           } else if (dist > SPACING + 0.06) {
-            b[i].s += Math.min(5.0 * dt, dist - SPACING); // magnet catch-up
+            b[i].s += Math.min(m.magnetSpeed * dt, dist - SPACING); // magnet catch-up
             // two segments just assembled into one group: a 3+ run may be complete
-            if (dist > SPACING * 1.6 && (b[i - 1].s - b[i].s) <= SPACING * 1.6) joins.push(b[i]);
+            if (dist > joinGap && (b[i - 1].s - b[i].s) <= joinGap) joins.push(b[i]);
           } else {
             b[i].s += spd * dt;
             if (b[i - 1].s - b[i].s < SPACING) b[i].s = b[i - 1].s - SPACING;
@@ -2321,7 +2190,7 @@ function step(dt, rawDt) {
         else {
           const headR = b[0].s / curveLen;
           const wasDanger = G.danger;
-          G.danger = headR > 0.72;
+          G.danger = headR > LEVEL.mechanics.dangerThreshold;
           if (G.danger && !wasDanger) {
             showBanner('THE SKULL STIRS!', 'hurry, little guardian!');
             sfx('warn');
@@ -2397,6 +2266,14 @@ tick();
 window.__game = {
   G, curveLen, PALETTE_CSS, ballMats, spawnBall, pointAt, triggerPower, composer, toy, toyGlow, marbleMat,
   scene, camera, TOTAL_BALLS, DIFFS, ATTRACT_SKILL, botThink, simGame, simGames,
+  LEVEL, LEVELS: listLevels(), levelId: LEVEL.id,
+  switchLevel: (id) => {
+    try {
+      const u = new URL(location.href);
+      u.searchParams.set('level', id);
+      location.href = u.toString();
+    } catch { /* ignore */ }
+  },
   start: () => { $('overlay').classList.add('hidden'); resetGame(); Music.start(); },
   shootAt: (x, z) => {
     G.aim = Math.atan2(x - tarsius.position.x, z - tarsius.position.z);
@@ -2408,6 +2285,19 @@ window.__game = {
   score: () => G.score,
   status: () => G.paused ? 'paused' : G.status,
 };
+try { $('subtitle').textContent = `${LEVEL.name} • Lv ${LEVEL.levelNo}`; } catch { /* ignore */ }
+try {
+  // Menu seed legend mirrors this island's power mix (same icons, per-level set).
+  const legend = document.querySelector('.seeds-legend');
+  const story = document.querySelector('#overlay .story');
+  if (story) story.innerHTML = `A tiny <b>tarsius</b> guards a toy-box <b>${LEVEL.name}</b>.<br/>Marble spirits roll toward the <b>Skull Cave</b> —<br/>blast them with seed-shots. Match <b>3+</b> to pop!`;  if (legend) {
+    legend.innerHTML = LEVEL.powersAvailable.map(t => {
+      const d = POWERS[t]; if (!d) return '';
+      const blurb = t === 'bomb' ? 'blasts nearby marbles' : t === 'slow' ? 'slows the march' : t === 'rev' ? 'rolls time back' : 'bonus + breathing room';
+      return `<div><span class="seed ${t === 'star' ? 'bomb' : t}">${d.letter}</span><b>${d.name[0] + d.name.slice(1).toLowerCase()}</b><i>${blurb}</i></div>`;
+    }).join('');
+  }
+} catch { /* ignore */ }
 /* ---------- attract mode via ?attract=1 (self-playing trailer demo) ---------- */
 try {
   if (new URLSearchParams(location.search).has('attract')) startAttract();
