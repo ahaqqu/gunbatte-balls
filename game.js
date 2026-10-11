@@ -7,7 +7,7 @@ import * as THREE from 'three';
    "Ganbatte" = do your best!
    ============================================================ */
 
-const BALL_R = 0.55, SPACING = 1.14;
+const BALL_R = 0.72, SPACING = 1.5;
 const TOTAL_BALLS = 40, COLORS_N = 4;
 const DIFFS = { chill: 0.68, normal: 1.0, spicy: 1.28 };
 const PALETTE = [0xe63946, 0x4361ee, 0x2dc653, 0xffc700];
@@ -125,7 +125,7 @@ scene.background = new THREE.Color(0x8fd3ef);
 scene.fog = new THREE.Fog(0x9fd8ef, 60, 140);
 
 /* Top-down miniature tabletop: OrthographicCamera looking down at ~52deg. */
-const FRUSTUM = 30;
+const FRUSTUM = 50;
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
 function updateOrthoCamera() {
   const aspect = innerWidth / innerHeight;
@@ -137,16 +137,16 @@ updateOrthoCamera();
 camera.position.set(0, 26, 20);
 camera.lookAt(0, 0, 1.0);
 
-/* Strong warm overhead sun + clean bright ambient + soft blue-green sky fill:
+/* Warm golden-hour sun + clean bright ambient + soft blue-green sky fill:
    crisp top-face glints, shadows soft blue-green, never heavy gray. */
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+scene.add(new THREE.AmbientLight(0xdfeaff, 0.55));
 scene.add(new THREE.HemisphereLight(0xa1d8ff, 0x5e9e3e, 0.85));
-const sun = new THREE.DirectionalLight(0xffdf8a, 3.0);
+const sun = new THREE.DirectionalLight(0xffc87a, 3.1);
 sun.position.set(10, 20, 15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -20; sun.shadow.camera.right = 20;
-sun.shadow.camera.top = 20; sun.shadow.camera.bottom = -20;
+sun.shadow.camera.left = -32; sun.shadow.camera.right = 32;
+sun.shadow.camera.top = 32; sun.shadow.camera.bottom = -32;
 sun.shadow.camera.near = 1; sun.shadow.camera.far = 70;
 sun.shadow.bias = -0.0002; sun.shadow.normalBias = 0.03;
 sun.shadow.radius = 5;
@@ -221,12 +221,12 @@ const ballFaceTex = [0, 1, 2, 3].map(k =>
   canvasTex(256, (x, s) => paintBallFace(x, s, k)));
 function marbleMat(color) {
   const idx = Math.max(0, PALETTE.indexOf(color));
-  return new THREE.MeshPhysicalMaterial({ flatShading: true,
+  return new THREE.MeshPhysicalMaterial({ flatShading: false,
     color: 0xffffff, map: ballFaceTex[idx],
-    roughness: 0.1, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.06,
-    transmission: 0.3, thickness: 0.5, ior: 1.45,
-    specularIntensity: 1.0, emissive: color, emissiveIntensity: 0.12,
+    roughness: 0.05, metalness: 0.0,
+    clearcoat: 1.0, clearcoatRoughness: 0.03,
+    transmission: 0.55, thickness: 0.8, ior: 1.45,
+    specularIntensity: 1.0, emissive: color, emissiveIntensity: 0.35,
   });
 }
 /* Hand-sculpted wobble: jitter vertices with position-hashed offsets so duplicated
@@ -278,7 +278,7 @@ const grassTex = canvasTex(256, (x, s) => {
   }
   x.globalAlpha = 1;
   speckle(x, s, 2200, ['#5cab35', '#a4ec7c', '#66c23f', '#b8f493'], 0.15, 0.4, 0.6, 1.8);
-}, 7, 7);
+}, 9, 9);
 /* Worn sand path: warm sand with grain + tiny pebbles. */
 const sandTex = canvasTex(256, (x, s) => {
   x.fillStyle = '#e9c37c'; x.fillRect(0, 0, s, s);
@@ -324,7 +324,7 @@ function noiseBump(size, rx, ry, contrast = 26) {
   t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
   return t;
 }
-const grassBump = noiseBump(256, 7, 7);
+const grassBump = noiseBump(256, 9, 9);
 const sandBump = noiseBump(256, 18, 2);
 /* Soft round AO blob (-alphaMap decal, unlit look via Standard black). */
 const blobTex = (() => {
@@ -519,10 +519,10 @@ const foamBubbles = [];
     color: 0xffffff, roughness: 0.2, metalness: 0.0,
     clearcoat: 1.0, clearcoatRoughness: 0.1,
   });
-  const foam1 = new THREE.Mesh(new THREE.TorusGeometry(14.6, 0.55, 12, 64), foamMat);
+  const foam1 = new THREE.Mesh(new THREE.TorusGeometry(24.4, 0.55, 12, 80), foamMat);
   foam1.rotation.x = Math.PI / 2; foam1.position.y = -1.35; foam1.name = 'foam1';
   scene.add(foam1);
-  const foam2 = new THREE.Mesh(new THREE.TorusGeometry(16.2, 0.32, 10, 64),
+  const foam2 = new THREE.Mesh(new THREE.TorusGeometry(26.1, 0.32, 10, 80),
     new THREE.MeshPhysicalMaterial({ flatShading: true,
       color: 0xffffff, transparent: true, opacity: 0.6, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1,
     }));
@@ -558,7 +558,7 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
 {
   // solid foam collar hugging the island exactly at the waterline (r≈12.3 @ y=-1.65)
   const collar = new THREE.Mesh(
-    new THREE.CylinderGeometry(12.62, 12.08, 0.62, 64, 1, true), foamCollarMat);
+    new THREE.CylinderGeometry(21.45, 20.9, 0.62, 80, 1, true), foamCollarMat);
   collar.position.y = -1.5; collar.name = 'foamCollar';
   scene.add(collar);
 }
@@ -569,7 +569,7 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
   });
   for (let i = 0; i < 44; i++) {
     const a = (i / 44) * Math.PI * 2 + R(-0.08, 0.08);
-    const rr = 14.6 + R(-0.5, 0.9);
+    const rr = 24.4 + R(-0.5, 0.9);
     const b = new THREE.Mesh(new THREE.SphereGeometry(R(0.1, 0.2), 10, 8), bubMat);
     b.position.set(Math.cos(a) * rr, -1.32, Math.sin(a) * rr);
     b.scale.y = 0.6;
@@ -582,26 +582,27 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
 const island = new THREE.Group(); scene.add(island);
 {
   const side = new THREE.Mesh(
-    new THREE.CylinderGeometry(14.2, 11.5, 3.2, 48, 1, true),
+    new THREE.CylinderGeometry(24, 20, 3.2, 64, 1, true),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9c6b3c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide })
   );
   side.position.y = -1.02; side.receiveShadow = true; side.castShadow = true;
   island.add(side);
   const top = new THREE.Mesh(
-    new THREE.CylinderGeometry(14.2, 14.2, 0.5, 48),
+    new THREE.CylinderGeometry(24, 24, 0.5, 64),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff, map: grassTex, bumpMap: grassBump, bumpScale: 0.15, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1})
   );
   top.position.y = 0.35; top.receiveShadow = true;
   island.add(top);
   const patchMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x66c142, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   const patchMat2 = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9cec7c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  [[-6,-4,3.2],[6,-4.5,2.6],[-3,6.5,2.8],[7,5.5,2.2],[0,-5.5,2.0],[-10,3,2.0],[11,0,1.8]]
+  [[-6,-4,3.2],[6,-4.5,2.6],[-3,6.5,2.8],[7,5.5,2.2],[0,-5.5,2.0],[-10,3,2.0],[11,0,1.8],
+   [-13,9,2.8],[13,-9,3.0],[-15,-6,2.4],[15,11,2.6],[0,13,2.4],[-8,-13,2.6]]
     .forEach(([x, z, r], i) => {
       const p = new THREE.Mesh(new THREE.CircleGeometry(r, 24), i % 2 ? patchMat2 : patchMat);
       p.rotation.x = -Math.PI / 2; p.position.set(x, 0.64, z); p.receiveShadow = true;
       island.add(p);
     });
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(13.55, 0.7, 12, 72),
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(23.35, 0.7, 12, 88),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf2dfa8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
   rim.rotation.x = Math.PI / 2; rim.position.y = 0.35; rim.receiveShadow = true;
   island.add(rim);
@@ -609,10 +610,10 @@ const island = new THREE.Group(); scene.add(island);
 
 /* ---- marble path ---- */
 const pathPts2D = [
-  [-12.2, -7.4], [-10, -8.2], [-5, -8.0], [0, -8.2], [5, -7.8], [9.0, -7.4],
-  [11.0, -5.6], [10.6, -3.8], [8.5, -2.5], [5, -2.2], [0, -2.4], [-5, -2.0], [-9, -2.4],
-  [-11.0, -0.8], [-10.5, 1.2], [-8.0, 2.9], [-4, 3.7], [0.5, 3.9], [5, 3.5], [8.5, 3.9],
-  [10.2, 5.2], [9.9, 6.8], [9.4, 7.8],
+  [-16.5, -9.5], [-13, -10.5], [-7, -10], [-1, -10.5], [5, -10], [11, -9.5],
+  [15, -8], [16.5, -5.5], [15.5, -3], [12, -1.5], [7, -1], [1, -1.3],
+  [-5, -0.8], [-11, -1.2], [-15, -0.5], [-16.5, 1.5], [-14, 3.5], [-9, 4.5],
+  [-3, 5], [3, 4.6], [9, 5], [13, 5.8], [15, 7.5], [13.5, 9.5], [12, 11],
 ];
 const curve = new THREE.CatmullRomCurve3(
   pathPts2D.map(([x, z]) => new THREE.Vector3(x, 0.6, z)), false, 'catmullrom', 0.35);
@@ -655,7 +656,7 @@ const curveLen = curve.getLength();
 
 /* ---- skull cave (glowing eyes, teeth, smoke) ---- */
 const skullPos = curve.getPointAt(1);
-let skullEyeMat, skullMouth;
+let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
 {
   const g = new THREE.Group();
   const stone = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x8d99ae, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
@@ -670,12 +671,31 @@ let skullEyeMat, skullMouth;
     bump.position.set(bx, by, bz); bump.castShadow = true; bump.receiveShadow = true;
     g.add(bump);
   });
-  // moss blobs growing on the rock
+  // moss blobs + draping moss beard over the crown
   const mossM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x6fae5a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  [[-1.4, 2.9, 1.5, 0.55], [1.6, 2.5, 1.3, 0.45], [0.4, 3.4, -0.6, 0.6]].forEach(([bx, by, bz, br]) => {
+  [[-1.4, 2.9, 1.5, 0.55], [1.6, 2.5, 1.3, 0.45], [0.4, 3.4, -0.6, 0.6], [-0.9, 3.8, 0.4, 0.5], [1.2, 3.6, -0.2, 0.42]].forEach(([bx, by, bz, br]) => {
     const mo = new THREE.Mesh(new THREE.SphereGeometry(br, 12, 10), mossM);
     mo.position.set(bx, by, bz); mo.scale.y = 0.45;
     g.add(mo);
+  });
+  // creeping vines spilling over the top with leaf dots
+  const vineM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3d8b4f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const vineLeafM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x5cc46a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  [[-1.8, 0.6], [-0.7, 1.4], [0.5, 1.1], [1.7, 0.2], [2.5, -0.6]].forEach(([vx, vz], vi) => {
+    const top = new THREE.Vector3(vx, 4.1 - (vi % 2) * 0.3, vz);
+    const mid = new THREE.Vector3(vx * 1.25, 2.5, vz + 1.1);
+    const end = new THREE.Vector3(vx * 1.1, 1.0 + (vi % 3) * 0.3, vz + 2.1);
+    const vc = new THREE.CatmullRomCurve3([top, mid, end]);
+    const vine = new THREE.Mesh(new THREE.TubeGeometry(vc, 20, 0.07, 6), vineM);
+    vine.castShadow = true;
+    g.add(vine);
+    [0.3, 0.55, 0.8].forEach((tt, li) => {
+      const p = vc.getPointAt(tt);
+      const lf = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), vineLeafM);
+      lf.position.copy(p); lf.scale.set(1.3, 0.5, 0.7);
+      lf.rotation.z = (li - 1) * 0.7;
+      g.add(lf);
+    });
   });
   skullMouth = new THREE.Mesh(new THREE.CircleGeometry(1.25, 24),
     new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x0d0a1a, emissive: 0x0d0a1a, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1}));
@@ -685,11 +705,11 @@ let skullEyeMat, skullMouth;
   const lips = new THREE.Mesh(new THREE.TorusGeometry(1.32, 0.3, 12, 28), stone);
   lips.position.set(0, 1.0, 2.72); lips.castShadow = true;
   g.add(lips);
-  // rounded molars (capsules, no sharp cones)
-  [-0.55, 0, 0.55].forEach(tx => {
-    const tooth = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.25, 4, 10), bone);
-    tooth.position.set(tx, 1.9, 2.8); tooth.castShadow = true;
-    g.add(tooth);
+  // big hand-sculpted upper fangs + chunky lower teeth
+  [-0.85, 0.85].forEach(tx => {
+    const fang = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.5, 4, 10), bone);
+    fang.position.set(tx, 1.75, 2.75); fang.castShadow = true;
+    g.add(fang);
   });
   [-0.3, 0.3].forEach(tx => {
     const tooth = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.18, 4, 10), bone);
@@ -709,7 +729,7 @@ let skullEyeMat, skullMouth;
   const jaw = new THREE.Mesh(new THREE.SphereGeometry(0.85, 16, 12), bone);
   jaw.position.set(0, 0.15, 2.2); jaw.scale.set(1.15, 0.55, 0.9); jaw.castShadow = true;
   g.add(jaw);
-  skullEyeMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3a0d0d, emissive: 0xff2200, emissiveIntensity: 0.35, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  skullEyeMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3a0d0d, emissive: 0xff2200, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   [-0.45, 0.45].forEach(x => {
     const e = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), skullEyeMat);
     e.position.set(x, 3.7, 2.15); g.add(e);
@@ -720,6 +740,7 @@ let skullEyeMat, skullMouth;
   g.position.copy(skullPos).add(new THREE.Vector3(0.4, 0, 0.5));
   g.rotation.y = -0.7;
   scene.add(g);
+  skullCave = g; skullMound = mound;
   groundBlob(skullPos.x + 0.4, skullPos.z + 0.5, 3.4, 0.3);
 }
 const smokes = [];
@@ -749,10 +770,10 @@ const smokes = [];
     const d = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), spotM);
     d.position.set(ox, oy, oz); shrine.add(d);
   });
-  shrine.position.set(12.3, 0.6, -1.5);
+  shrine.position.set(18.5, 0.6, 2.5);
   shrine.rotation.y = -0.5;
   scene.add(shrine);
-  groundBlob(12.3, -1.5, 1.1, 0.24);
+  groundBlob(18.5, 2.5, 1.1, 0.24);
 }
 
 /* ---- toy decorations ---- */
@@ -772,6 +793,7 @@ function chibiTree(x, z, s = 1) {
   });
   g.position.set(x, 0.5, z);
   g.rotation.y = Math.random() * 6;
+  g.userData.treeTop = true;
   scene.add(g);
   groundBlob(x, z, 1.25 * s, 0.26);
 }
@@ -845,35 +867,36 @@ function nearPath(x, z, d = 1.9) {
     const p = curve.getPointAt(i / 40);
     if ((p.x - x) ** 2 + (p.z - z) ** 2 < d * d) return true;
   }
-  if ((x - SHOOTER_POS.x) ** 2 + (z - SHOOTER_POS.z) ** 2 < 9) return true;
-  if ((x - 9.8) ** 2 + (z - 8.3) ** 2 < 12) return true;
-  if ((x + 12.2) ** 2 + (z + 7.4) ** 2 < 9) return true;
-  if ((x - 12.3) ** 2 + (z + 1.5) ** 2 < 4) return true; // egg shrine
+  if ((x - SHOOTER_POS.x) ** 2 + (z - SHOOTER_POS.z) ** 2 < 25) return true; // clear stage round the star
+  if ((x - 12.4) ** 2 + (z - 11.5) ** 2 < 14) return true; // skull cave approach
+  if ((x + 16.5) ** 2 + (z + 9.5) ** 2 < 9) return true; // marble portal
+  if ((x - 18.5) ** 2 + (z - 2.5) ** 2 < 4) return true; // egg shrine
+  if ((x + 4.5) ** 2 + (z - 8.6) ** 2 < 10) return true; // house plot stays clear
   return false;
 }
 {
   let placed = 0, guard = 0;
-  while (placed < 22 && guard++ < 500) {
-    const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 10;
+  while (placed < 30 && guard++ < 800) {
+    const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 19;
     const x = Math.cos(a) * r, z = Math.sin(a) * r * 0.95;
     if (nearPath(x, z)) continue;
     chibiTree(x, z, 0.8 + Math.random() * 0.7); placed++;
   }
-  for (let i = 0; i < 12; i++) {
-    const a = Math.random() * 6.28, r = 4 + Math.random() * 9;
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * 6.28, r = 4 + Math.random() * 16;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.4)) continue;
     rock(x, z, 0.7 + Math.random() * 0.9);
   }
   const fc = [0xff5d8f, 0xffca3a, 0xff595e, 0xffffff, 0xc77dff];
-  for (let i = 0; i < 34; i++) {
-    const a = Math.random() * 6.28, r = 2.5 + Math.random() * 10.5;
+  for (let i = 0; i < 48; i++) {
+    const a = Math.random() * 6.28, r = 2.5 + Math.random() * 19;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.2)) continue;
     flower(x, z, fc[i % fc.length]);
   }
-  for (let i = 0; i < 70; i++) {
-    const a = Math.random() * 6.28, r = 2 + Math.random() * 11;
+  for (let i = 0; i < 110; i++) {
+    const a = Math.random() * 6.28, r = 2 + Math.random() * 20;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.0)) continue;
     grassTuft(x, z);
@@ -1002,7 +1025,7 @@ function nearPath(x, z, d = 1.9) {
 const clouds = [];
 {
   const cm = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xffffff, roughness: 0.2, });
-  const spots = [[-12.5, 11, 0], [12.5, 11.5, 1], [-11.5, 12, -7], [11.5, 12.5, -8]];
+  const spots = [[-21, 11, 0], [21, 11.5, 1], [-20, 12, -11], [20, 12.5, -12]];
   spots.forEach(([cx, cy, cz], i) => {
     const g = new THREE.Group();
     for (let j = 0; j < 4; j++) {
@@ -1108,79 +1131,162 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     sp.position.set(sx, 0.88, sz);
     tarsius.add(sp);
   });
-
-  tarsiusBody = new THREE.Group(); tarsiusBody.position.y = 1.0; tarsius.add(tarsiusBody);
-  // ultra-cute chubby badger warrior: high-density smooth meshes, flat-shaded facets
-  const fur = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xa5713f, roughness: 0.2, });
-  const furDark = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x6b4426, roughness: 0.2, });
-  const bellyM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xf7e8c8, roughness: 0.2, });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.95, 28, 20), fur);
-  body.scale.set(1, 1.12, 0.92); body.castShadow = true;
-  tarsiusBody.add(body);
-  const saddle = new THREE.Mesh(new THREE.SphereGeometry(0.8, 24, 18), furDark);
-  saddle.position.set(0, 0.35, -0.45); saddle.scale.set(0.85, 0.9, 0.6);
-  tarsiusBody.add(saddle);
-  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.68, 24, 18), bellyM);
-  belly.position.set(0, -0.12, 0.48); belly.scale.set(0.82, 1.0, 0.55);
-  tarsiusBody.add(belly);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.8, 28, 20), fur);
-  head.position.y = 1.05; head.rotation.x = 0.12; head.castShadow = true;
-  tarsiusBody.add(head);
-  // cream face patch + badger eye-mask stripes
-  const facePatch = new THREE.Mesh(new THREE.SphereGeometry(0.55, 24, 18), bellyM);
-  facePatch.position.set(0, 1.12, 0.42); facePatch.scale.set(1, 0.88, 0.55);
-  tarsiusBody.add(facePatch);
-  [-1, 1].forEach(s => {
-    const mask = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12), furDark);
-    mask.position.set(s * 0.3, 1.3, 0.5); mask.scale.set(1, 1.2, 0.5);
-    mask.rotation.z = -s * 0.25;
-    tarsiusBody.add(mask);
+  // tiny glowing mushrooms + moss ringing the stump bottom
+  const glowCapM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x4cc9f0,
+    emissive: 0x4cc9f0, emissiveIntensity: 1.4, roughness: 0.2, metalness: 0.0,
+    clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  [[1.75, 0.5], [-1.7, -0.7], [0.4, -1.85]].forEach(([gx, gz]) => {
+    const gm = new THREE.Group();
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.2, 8), shroomStemM);
+    stem.position.y = 0.1; gm.add(stem);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), glowCapM);
+    cap.position.y = 0.22; cap.scale.y = 0.7; cap.castShadow = true; gm.add(cap);
+    gm.position.set(gx, 0.02, gz);
+    tarsius.add(gm);
   });
-  // tiny green leaf adventurer cap with stem + top blade
-  const leafM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), leafM);
-  leaf.position.set(0.05, 1.92, -0.05); leaf.scale.set(1.1, 0.5, 1.1); leaf.rotation.z = -0.18; leaf.castShadow = true;
-  leaf.name = 'leafhat';
-  tarsiusBody.add(leaf);
-  const leafStem = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.22, 8), leafM);
-  leafStem.position.set(0.05, 2.14, -0.05);
-  tarsiusBody.add(leafStem);
-  const leafBlade = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), leafM);
-  leafBlade.position.set(0.22, 2.22, -0.05); leafBlade.scale.set(1.4, 0.4, 0.7);
-  leafBlade.rotation.z = 0.5; leafBlade.castShadow = true;
-  tarsiusBody.add(leafBlade);
-  // big glossy black dot-eyes with white glints (blink via scale.y)
-  const eyeM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0x14100c, roughness: 0.1, });
-  const glintM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.1, });
-  eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.21, 20, 16), eyeM);
-  eyeL.position.set(-0.3, 1.28, 0.68); eyeL.scale.z = 0.75;
-  const glintL = new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 8), glintM);
-  glintL.position.set(0.07, 0.08, 0.15);
+  const mossBaseM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x46b457,
+    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  [[1.55, 1.1, 0.28], [-1.5, 0.9, 0.24], [-0.6, 1.7, 0.3], [0.9, -1.6, 0.26], [-1.1, -1.4, 0.22]].forEach(([mx, mz, mr]) => {
+    const mo = new THREE.Mesh(new THREE.SphereGeometry(mr, 10, 8), mossBaseM);
+    mo.position.set(mx, 0.06, mz); mo.scale.y = 0.35;
+    mo.receiveShadow = true;
+    tarsius.add(mo);
+  });
+  // neon magical mushrooms (blue + purple glow) clustered round the roots
+  [[-1.95, 0.15, 0x33ccff], [1.85, -0.9, 0xb366ff], [0.9, 1.95, 0x33ccff], [-0.7, -1.95, 0xb366ff]].forEach(([gx, gz, gc]) => {
+    const gm = new THREE.Group();
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.24, 8), shroomStemM);
+    stem.position.y = 0.12; gm.add(stem);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10),
+      new THREE.MeshPhysicalMaterial({ flatShading: true, color: gc, emissive: gc,
+        emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+    cap.position.y = 0.27; cap.scale.y = 0.7; cap.castShadow = true; gm.add(cap);
+    gm.position.set(gx, 0.02, gz);
+    tarsius.add(gm);
+  });
+  // lush tiny ferns fanning out between the roots
+  const fernM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide });
+  [[1.3, 1.3], [-1.35, 1.15], [0.2, -1.9], [-1.2, -1.5]].forEach(([fx, fz]) => {
+    const fern = new THREE.Group();
+    for (let i = 0; i < 6; i++) {
+      const bl = new THREE.Mesh(bladeGeo, fernM);
+      const a = (i / 6) * Math.PI * 2;
+      bl.position.set(Math.cos(a) * 0.06, 0, Math.sin(a) * 0.06);
+      bl.rotation.y = -a + Math.PI / 2;
+      bl.rotation.x = 0.5;
+      bl.scale.setScalar(1.4);
+      fern.add(bl);
+    }
+    fern.position.set(fx, 0.02, fz);
+    tarsius.add(fern);
+  });
+
+  tarsiusBody = new THREE.Group(); tarsiusBody.position.y = 1.0; tarsiusBody.scale.setScalar(1.3); tarsius.add(tarsiusBody);
+  // ultra-cute stylized TARSIER: huge head, saucer eyes, spindly limbs, vinyl gloss
+  const fur = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xee9a2f, roughness: 0.2, });
+  const bellyM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xf7e8c8, roughness: 0.2, });
+  // tiny chubby body nestled in the stump hollow
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.62, 28, 20), fur);
+  body.scale.set(1, 1.15, 0.9); body.position.y = 0.1; body.castShadow = true;
+  tarsiusBody.add(body);
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.45, 24, 18), bellyM);
+  belly.position.set(0, 0.02, 0.38); belly.scale.set(0.85, 1.0, 0.55);
+  tarsiusBody.add(belly);
+  // oversized round head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.95, 32, 24), fur);
+  head.position.set(0, 1.35, 0.1); head.castShadow = true;
+  tarsiusBody.add(head);
+  const facePatch = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 18), bellyM);
+  facePatch.position.set(0, 1.35, 0.5); facePatch.scale.set(1.1, 0.9, 0.5);
+  tarsiusBody.add(facePatch);
+  // massive saucer-like glossy black eyes with bright glints (blink via scale.y)
+  const eyeM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0x14100c, roughness: 0.1, });
+  const glintM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.1, });
+  eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.34, 24, 18), eyeM);
+  eyeL.position.set(-0.38, 1.55, 0.78); eyeL.scale.z = 0.7;
+  const glintL = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), glintM);
+  glintL.position.set(0.1, 0.12, 0.2);
   eyeL.add(glintL);
-  eyeR = eyeL.clone(); eyeR.position.x = 0.3;
-  eyeR.children[0].position.x = -0.07;
+  const glintL2 = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), glintM);
+  glintL2.position.set(-0.1, -0.08, 0.21);
+  eyeL.add(glintL2);
+  eyeR = eyeL.clone(); eyeR.position.x = 0.38;
+  eyeR.children[0].position.x = -0.1;
+  eyeR.children[1].position.x = 0.1;
   tarsiusBody.add(eyeL, eyeR);
+  // thin dark eye-rings for extra toy expression
+  const ringM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x5a3a22, roughness: 0.2, });
   [-1, 1].forEach(s => {
-    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.26, 16, 12), fur);
-    ear.position.set(s * 0.58, 1.72, -0.05); ear.scale.set(1, 1.15, 0.4);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.055, 10, 24), ringM);
+    ring.position.set(s * 0.38, 1.55, 0.82);
+    tarsiusBody.add(ring);
+  });
+  // large rounded bat-like ears sticking out sideways (bounce on fire via tick)
+  const leafM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  [-1, 1].forEach(s => {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), fur);
+    ear.position.set(s * 0.95, 1.75, -0.1); ear.scale.set(1, 1.2, 0.35);
+    ear.rotation.z = s * -0.3;
     ear.castShadow = true; ear.name = s < 0 ? 'earL' : 'earR';
     tarsiusBody.add(ear);
-    const inner = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xe8b87d }));
-    inner.position.set(s * 0.58, 1.72, 0.05); inner.scale.set(1, 1.15, 0.3);
+    const inner = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12),
+      new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xe8b87d }));
+    inner.position.set(s * 0.95, 1.75, 0.0); inner.scale.set(1, 1.2, 0.3);
+    inner.rotation.z = s * -0.3;
     tarsiusBody.add(inner);
   });
-  // round snout + tiny nose
-  const snout = new THREE.Mesh(new THREE.SphereGeometry(0.3, 18, 14), bellyM);
-  snout.position.set(0, 0.98, 0.78); snout.scale.set(1.1, 0.8, 0.8);
+  // tiny tropical flower tucked behind the right ear
+  {
+    const bloom = new THREE.Group();
+    const petalM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xff5d8f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const heartM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xffc700, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    for (let i = 0; i < 5; i++) {
+      const p = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), petalM);
+      const a = (i / 5) * Math.PI * 2;
+      p.position.set(Math.cos(a) * 0.1, Math.sin(a) * 0.1, 0);
+      p.scale.set(1, 1, 0.5); p.castShadow = true;
+      bloom.add(p);
+    }
+    const heart = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), heartM);
+    heart.position.z = 0.05;
+    bloom.add(heart);
+    bloom.position.set(1.02, 1.42, -0.28);
+    bloom.rotation.y = 0.5;
+    bloom.name = 'leafhat';
+    tarsiusBody.add(bloom);
+  }
+  // tiny green leaf hat + colorful bandana for the little adventurer
+  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const hat = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 14), hatM);
+  hat.position.set(-0.08, 2.28, -0.02); hat.scale.set(1.15, 0.45, 1.15);
+  hat.rotation.z = 0.22; hat.castShadow = true;
+  tarsiusBody.add(hat);
+  const hatTip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), hatM);
+  hatTip.position.set(-0.42, 2.42, -0.02); hatTip.scale.set(1.5, 0.45, 0.8);
+  hatTip.rotation.z = 0.55; hatTip.castShadow = true;
+  tarsiusBody.add(hatTip);
+  const bandM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.13, 12, 24), bandM);
+  band.position.set(0, 0.62, 0.1); band.rotation.x = 1.25; band.rotation.z = 0.2;
+  band.castShadow = true;
+  tarsiusBody.add(band);
+  [-1, 1].forEach(q => {
+    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), bandM);
+    tail.position.set(0.42 + q * 0.08, 0.42, -0.42); tail.scale.set(1.2, 0.5, 0.7);
+    tail.rotation.z = q * 0.6; tail.castShadow = true;
+    tarsiusBody.add(tail);
+  });
+  // tiny round snout + nose
+  const snout = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), bellyM);
+  snout.position.set(0, 1.02, 0.92); snout.scale.set(1.15, 0.8, 0.8);
   tarsiusBody.add(snout);
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.1, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0x3a2a1a }));
-  nose.position.set(0, 1.04, 1.0);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8),
+    new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.1, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0x3a2a1a }));
+  nose.position.set(0, 1.08, 1.04);
   tarsiusBody.add(nose);
   // chunky hollow-log cannon: bark tube + wood rim + dark bore + node rings
-  const barkM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const paleWoodM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xd9a75f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const barkM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xcfb95c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const paleWoodM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xd9a75f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   const log = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 2.3, 20), barkM);
   log.rotation.x = Math.PI / 2; log.position.set(0, 0.55, 1.1); log.castShadow = true;
   tarsiusBody.add(log);
@@ -1188,7 +1294,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
   logRim.position.set(0, 0.55, 2.24); logRim.castShadow = true;
   tarsiusBody.add(logRim);
   const bore = new THREE.Mesh(new THREE.CircleGeometry(0.18, 20),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x1d130c, emissive: 0x1d130c, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+    new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.2, metalness: 0.0, color: 0x1d130c, emissive: 0x1d130c, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
   bore.position.set(0, 0.55, 2.26);
   tarsiusBody.add(bore);
   [0.45, 1.55].forEach(bz => {
@@ -1209,68 +1315,85 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh;
     lf.rotation.z = q * 0.55; lf.castShadow = true;
     tarsiusBody.add(lf);
   });
-  // plump cheeks for extra toy roundness
-  [-0.42, 0.42].forEach(cx => {
-    const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 12),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xe8b87d, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
-    cheek.position.set(cx, 0.78, 0.52); cheek.scale.set(1, 0.8, 0.6);
-    tarsiusBody.add(cheek);
-  });
+  // (cheeks folded into the cream face patch on this tiny face)
   muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.55, 2.25);
   tarsiusBody.add(muzzle);
   flashMesh = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 0.85, transparent: true, opacity: 0 }));
+    new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 0.85, transparent: true, opacity: 0 }));
   flashMesh.position.copy(muzzle.position);
   tarsiusBody.add(flashMesh);
-  // hugging arms wrapped round the log + round paws resting on it
+  // long spindly limbs between two points, with suction-cup pads gripping
+  const limb = (x1, y1, z1, x2, y2, z2, r, mat) => {
+    const a = new THREE.Vector3(x1, y1, z1), b = new THREE.Vector3(x2, y2, z2);
+    const d = b.clone().sub(a), len = d.length();
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.85, r, len, 10), mat);
+    m.position.copy(a).addScaledVector(d, 0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+    m.castShadow = true;
+    tarsiusBody.add(m);
+    return m;
+  };
+  const padM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xf7e8c8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  // spindly arms wrapping the log cannon, finger pads pressed on the bark
   [-1, 1].forEach(s => {
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.85, 12), fur);
-    arm.position.set(s * 0.52, 0.72, 0.95); arm.rotation.x = 1.25; arm.rotation.z = s * -0.35;
-    arm.castShadow = true; tarsiusBody.add(arm);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 12), fur);
-    hand.position.set(s * 0.3, 0.62, 1.42); tarsiusBody.add(hand);
+    limb(s * 0.52, 0.32, 0.3, s * 0.3, 0.62, 1.2, 0.07, fur);
+    [[0.17, 0.72], [0.29, 0.78], [0.39, 0.7]].forEach(([px, py]) => {
+      const pad = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), padM);
+      pad.position.set(s * px, py, 1.28);
+      tarsiusBody.add(pad);
+    });
   });
+  // long dangly legs down the stump face, toe pads gripping the bark
   [-1, 1].forEach(s => {
-    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.32, 14, 12), fur);
-    foot.position.set(s * 0.48, -0.85, 0.35); foot.scale.set(0.7, 0.4, 1.5);
+    limb(s * 0.3, -0.2, 0.42, s * 0.42, -0.68, 1.5, 0.07, fur);
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), fur);
+    foot.position.set(s * 0.42, -0.72, 1.52); foot.scale.set(1, 0.7, 0.6);
+    foot.castShadow = true;
     tarsiusBody.add(foot);
+    [-0.09, 0, 0.09].forEach(dx => {
+      const toe = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), padM);
+      toe.position.set(s * 0.42 + dx, -0.66, 1.62);
+      tarsiusBody.add(toe);
+    });
   });
-  // traveler backpack: bedroll + herb bundle + pouch on his back
-  const bedroll = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.45, 6, 12), furDark);
-  bedroll.position.set(0, 0.78, -0.82); bedroll.rotation.z = Math.PI / 2; bedroll.castShadow = true;
-  tarsiusBody.add(bedroll);
-  [-0.12, 0.1, 0.28].forEach((hx, i) => {
-    const herb = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), leafM);
-    herb.position.set(hx, 1.05 + (i % 2) * 0.08, -0.8); herb.scale.set(1.2, 0.5, 0.8);
-    herb.rotation.z = hx * 2; herb.castShadow = true;
-    tarsiusBody.add(herb);
-  });
-  const pouch = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), paleWoodM);
-  pouch.position.set(-0.32, 0.42, -0.8); pouch.scale.set(1, 1.15, 0.7); pouch.castShadow = true;
-  tarsiusBody.add(pouch);
-  // large fluffy layered tail sweeping up behind (rotation animated in tick)
+  // (backpack removed: tiny tarsier travels light, flower only)
+  // long thin tail wrapping playfully round the stump, ending in a fur tuft
   tailMesh = new THREE.Group();
-  tailMesh.position.set(0.78, -0.1, -0.7);
-  [[0, 0, 0, 0.42, fur], [0.28, 0.42, -0.28, 0.36, bellyM], [0.5, 0.82, -0.5, 0.3, fur]].forEach(([tx, ty, tz, tr, tm]) => {
-    const puff = new THREE.Mesh(new THREE.SphereGeometry(tr, 16, 12), tm);
-    puff.position.set(tx, ty, tz); puff.castShadow = true;
-    tailMesh.add(puff);
-  });
+  tailMesh.position.set(0, -0.85, -0.2);
+  {
+    const wrap = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.3, 0.1, -0.55),
+      new THREE.Vector3(1.45, 0.0, -0.5),
+      new THREE.Vector3(1.7, -0.05, 0.6),
+      new THREE.Vector3(0.9, -0.1, 1.45),
+      new THREE.Vector3(-0.3, -0.05, 1.5),
+    ]);
+    const rope = new THREE.Mesh(new THREE.TubeGeometry(wrap, 40, 0.06, 8), fur);
+    rope.castShadow = true;
+    tailMesh.add(rope);
+    const tuftAt = new THREE.Vector3(-0.3, -0.05, 1.5);
+    [[0, 0, 0, 0.16], [0.12, 0.08, 0.05, 0.12], [-0.1, 0.1, -0.04, 0.11]].forEach(([dx, dy, dz, tr]) => {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(tr, 12, 10), bellyM);
+      puff.position.set(tuftAt.x + dx, tuftAt.y + dy, tuftAt.z + dz);
+      puff.castShadow = true;
+      tailMesh.add(puff);
+    });
+  }
   tarsiusBody.add(tailMesh);
 
   tarsius.position.copy(SHOOTER_POS);
   scene.add(tarsius);
-  groundBlob(SHOOTER_POS.x, SHOOTER_POS.z, 2.2, 0.3);
+  groundBlob(SHOOTER_POS.x, SHOOTER_POS.z, 2.6, 0.3);
 }
 function makeOrb(colorIdx) {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.4, 28, 20), marbleMat(PALETTE[colorIdx]));
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.52, 28, 20), marbleMat(PALETTE[colorIdx]));
   m.castShadow = true;
   return m;
 }
-const curOrb = makeOrb(0); curOrb.position.set(0, 4.0, 2.0); scene.add(curOrb);
-const nextOrb = makeOrb(1); nextOrb.scale.setScalar(0.65); nextOrb.position.set(1.5, 3.5, 1.0); scene.add(nextOrb);
+const curOrb = makeOrb(0); curOrb.position.set(0, 0.55, 3.0); tarsiusBody.add(curOrb);
+const nextOrb = makeOrb(1); nextOrb.scale.setScalar(0.65); nextOrb.position.set(1.9, 4.4, 1.0); scene.add(nextOrb);
 const aimGeo = new THREE.BufferGeometry().setFromPoints(
-  Array.from({ length: 8 }, (_, i) => new THREE.Vector3(0, 0, 2.6 + i * 0.9)));
+  Array.from({ length: 8 }, (_, i) => new THREE.Vector3(0, 0, 3.6 + i * 0.9)));
 const aimLine = new THREE.Points(aimGeo, new THREE.PointsMaterial({
   color: 0xffffff, size: 0.28, transparent: true, opacity: 0.85, sizeAttenuation: true }));
 tarsiusBody.add(aimLine);
@@ -1278,12 +1401,12 @@ tarsiusBody.add(aimLine);
 /* ==================== GAME STATE ==================== */
 const ballGeo = new THREE.SphereGeometry(BALL_R, 32, 24);
 const ballMats = PALETTE.map(c => marbleMat(c));
-const hiGeo = new THREE.SphereGeometry(0.13, 12, 10);
-const hiMat = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.85, transparent: true, opacity: 0.85 });
-const ringGeo = new THREE.TorusGeometry(0.62, 0.09, 8, 24);
-const ringMat = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffc700, emissive: 0xffb700, emissiveIntensity: 0.9});
-const wingGeo = new THREE.SphereGeometry(0.16, 12, 10);
-const trailGeo = new THREE.SphereGeometry(0.16, 14, 10);
+const hiGeo = new THREE.SphereGeometry(0.16, 12, 10);
+const hiMat = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.85, transparent: true, opacity: 0.85 });
+const ringGeo = new THREE.TorusGeometry(0.8, 0.11, 8, 28);
+const ringMat = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffc700, emissive: 0xffb700, emissiveIntensity: 0.9});
+const wingGeo = new THREE.SphereGeometry(0.2, 12, 10);
+const trailGeo = new THREE.SphereGeometry(0.2, 14, 10);
 
 function letterSprite(letter, bg) {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -1294,7 +1417,7 @@ function letterSprite(letter, bg) {
   x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(letter, 32, 34);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false }));
-  s.scale.set(0.9, 0.9, 1); s.renderOrder = 5;
+  s.scale.set(1.1, 1.1, 1); s.renderOrder = 5;
   return s;
 }
 const G = {
@@ -1320,7 +1443,7 @@ function makeBallMesh(color, power) {
   const core = new THREE.Mesh(ballGeo, ballMats[color]);
   core.castShadow = true;
   const hi = new THREE.Mesh(hiGeo, hiMat);
-  hi.position.set(-0.18, 0.2, 0.35);
+  hi.position.set(-0.23, 0.26, 0.46);
   mesh.add(core, hi);
   if (power) {
     // chunky golden power rim + tiny wings so seed-balls stand out
@@ -1329,20 +1452,20 @@ function makeBallMesh(color, power) {
     mesh.add(r);
     [-1, 1].forEach(s => {
       const wing = new THREE.Mesh(wingGeo, ringMat);
-      wing.position.set(s * 0.62, 0.1, 0);
+      wing.position.set(s * 0.8, 0.12, 0);
       wing.scale.set(1.3, 0.45, 0.6);
       wing.rotation.z = s * 0.45;
       mesh.add(wing);
     });
     const sp = letterSprite(POWERS[power].letter, POWERS[power].bg);
-    sp.position.y = 1.0;
+    sp.position.y = 1.25;
     mesh.add(sp);
   }
   return mesh;
 }
 function spawnBall(s = 0, color = randColor(), power = null) {
   const mesh = makeBallMesh(color, power);
-  const p = pointAt(s); mesh.position.copy(p); mesh.position.y = 1.05;
+  const p = pointAt(s); mesh.position.copy(p); mesh.position.y = 1.15;
   scene.add(mesh);
   G.balls.push({ s, color, power, mesh, core: mesh.children[0] });
   G.balls.sort((a, b) => b.s - a.s);
@@ -1527,7 +1650,7 @@ function insertShot(proj, hitIdx) {
   else if (idx >= b.length) ns = b[b.length - 1].s - SPACING;
   else ns = (b[idx - 1].s + b[idx].s) / 2;
   const mesh = makeBallMesh(proj.color, null);
-  const p = pointAt(ns); mesh.position.copy(p); mesh.position.y = 1.05;
+  const p = pointAt(ns); mesh.position.copy(p); mesh.position.y = 1.15;
   scene.add(mesh);
   b.splice(idx, 0, { s: ns, color: proj.color, power: null, mesh, core: mesh.children[0] });
   for (let i = idx + 1; i < b.length; i++) {
@@ -1860,10 +1983,16 @@ function tick() {
     s.scale.setScalar(0.6 + k * 1.6);
     s.material.opacity = 0.35 * (1 - k);
   });
-  // skull eyes react to danger
+  // living boss gate: slow breathing scale + glowing red eye flicker
+  if (skullCave) {
+    const br = 1 + Math.sin(G.time * 1.6) * 0.015;
+    skullCave.scale.set(br, 1 + (1 - br), br);
+  }
   if (skullEyeMat) {
-    const target = G.danger && (G.status === 'playing') ? 2.6 + Math.sin(G.time * 8) * 0.8 : 0.35;
-    skullEyeMat.emissiveIntensity += (target - skullEyeMat.emissiveIntensity) * Math.min(1, dt * 5);
+    const target = G.danger && (G.status === 'playing')
+      ? 3.0 + Math.sin(G.time * 8) * 0.8
+      : 0.9 + Math.sin(G.time * 2.2) * 0.25;
+    skullEyeMat.emissiveIntensity += (target - skullEyeMat.emissiveIntensity) * Math.min(1, dt * 3);
   }
 
   /* --- tarsius life --- */
@@ -1871,12 +2000,17 @@ function tick() {
   tarsiusBody.position.y = 1.0 + Math.sin(G.time * 3) * 0.05 - G.recoil * 0.15 + (G.happy > 0 ? Math.sin(G.happy * 12) * 0.12 : 0);
   tarsiusBody.rotation.x = G.recoil * 0.25;
   const squash = 1 + (G.happy > 0 ? Math.sin(G.happy * 12) * 0.06 : 0);
-  tarsiusBody.scale.set(2 - squash > 0 ? 1 / Math.sqrt(squash) : 1, squash, 1);
+  tarsiusBody.scale.set(1.3 * (2 - squash > 0 ? 1 / Math.sqrt(squash) : 1), 1.3 * squash, 1.3);
   if (G.recoil > 0) G.recoil = Math.max(0, G.recoil - dt * 5);
   if (G.happy > 0) G.happy = Math.max(0, G.happy - dt);
   if (tailMesh) tailMesh.rotation.y = Math.sin(G.time * 2.2) * 0.35;
   const earL = tarsiusBody.getObjectByName('earL');
-  if (earL) earL.rotation.z = Math.sin(G.time * 1.3) * 0.12 + (G.happy > 0 ? 0.35 : 0);
+  const earR = tarsiusBody.getObjectByName('earR');
+  // bouncy ear physics: idle sway + happy perk + springy flop when a marble fires
+  const flop = G.recoil * 0.9 + (G.happy > 0 ? 0.35 : 0);
+  const wob = Math.sin(G.time * 28) * G.recoil * 0.35;
+  if (earL) earL.rotation.z = 0.3 + Math.sin(G.time * 1.3) * 0.06 + flop + wob;
+  if (earR) earR.rotation.z = -0.3 - Math.sin(G.time * 1.3 + 1) * 0.06 - flop - wob;
   G.blink -= dt;
   if (G.blink < -0.12) G.blink = 2 + Math.random() * 3;
   eyeL.scale.y = eyeR.scale.y = G.blink < 0 ? 0.1 : 1;
@@ -1885,12 +2019,12 @@ function tick() {
     flashMesh.material.opacity = Math.max(0, G.flash / 0.09) * 0.95;
     flashMesh.scale.setScalar(1 + (0.09 - Math.max(0, G.flash)) * 8);
   } else flashMesh.material.opacity = 0;
-  // loaded seed-orbs presented above the warrior: bouncy micro-animation
+  // loaded seed-orb riding the bamboo tip: bouncy micro-animation (local to body)
   const cb = Math.sin(G.time * 2);
-  curOrb.position.y = 4.0 + cb * 0.15;
+  curOrb.position.y = 0.55 + cb * 0.12;
   curOrb.scale.set(1 - cb * 0.04, 1 + cb * 0.06, 1 - cb * 0.04);
   const nb = Math.sin(G.time * 2 + 1);
-  nextOrb.position.y = 3.5 + nb * 0.12;
+  nextOrb.position.y = 4.4 + nb * 0.12;
   nextOrb.scale.setScalar(0.65 * (1 + nb * 0.05));
   curOrb.rotation.y += dt; nextOrb.rotation.y -= dt * 1.4;
 
@@ -1967,7 +2101,7 @@ function step(dt, rawDt) {
         }
         b.forEach(x => {
           const p = pointAt(x.s);
-          x.mesh.position.set(p.x, 1.05, p.z);
+          x.mesh.position.set(p.x, 1.15, p.z);
           // rolling
           tmpAxis.copy(tangentAt(x.s));
           const ax = new THREE.Vector3(-tmpAxis.z, 0, tmpAxis.x).normalize();
@@ -1991,13 +2125,13 @@ function step(dt, rawDt) {
       for (let i = G.projectiles.length - 1; i >= 0; i--) {
         const pr = G.projectiles[i];
         pr.pos.addScaledVector(pr.vel, dt);
-        pr.mesh.position.set(pr.pos.x, 1.05, pr.pos.z);
+        pr.mesh.position.set(pr.pos.x, 1.15, pr.pos.z);
         pr.core.rotation.y += dt * 9;
         pr.hist.unshift(pr.pos.clone());
         if (pr.hist.length > 9) pr.hist.pop();
         pr.trail.forEach((t, k) => {
           const h = pr.hist[Math.min(pr.hist.length - 1, k * 2 + 1)];
-          if (h) { t.position.set(h.x, 1.05, h.z); t.visible = true; }
+          if (h) { t.position.set(h.x, 1.15, h.z); t.visible = true; }
           else t.visible = false;
         });
         let dead = Math.abs(pr.pos.x) > 20 || Math.abs(pr.pos.z) > 20;
