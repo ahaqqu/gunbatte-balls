@@ -125,7 +125,7 @@ scene.background = new THREE.Color(0x8fd3ef);
 scene.fog = new THREE.Fog(0x9fd8ef, 60, 140);
 
 /* Top-down miniature tabletop: OrthographicCamera looking down at ~52deg. */
-const FRUSTUM = 50;
+const FRUSTUM = 40;
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
 function updateOrthoCamera() {
   const aspect = innerWidth / innerHeight;
@@ -145,8 +145,8 @@ const sun = new THREE.DirectionalLight(0xffc87a, 3.1);
 sun.position.set(10, 20, 15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -32; sun.shadow.camera.right = 32;
-sun.shadow.camera.top = 32; sun.shadow.camera.bottom = -32;
+sun.shadow.camera.left = -34; sun.shadow.camera.right = 34;
+sun.shadow.camera.top = 34; sun.shadow.camera.bottom = -34;
 sun.shadow.camera.near = 1; sun.shadow.camera.far = 70;
 sun.shadow.bias = -0.0002; sun.shadow.normalBias = 0.03;
 sun.shadow.radius = 5;
@@ -519,10 +519,10 @@ const foamBubbles = [];
     color: 0xffffff, roughness: 0.2, metalness: 0.0,
     clearcoat: 1.0, clearcoatRoughness: 0.1,
   });
-  const foam1 = new THREE.Mesh(new THREE.TorusGeometry(24.4, 0.55, 12, 80), foamMat);
+  const foam1 = new THREE.Mesh(new THREE.TorusGeometry(26.4, 0.55, 12, 88), foamMat);
   foam1.rotation.x = Math.PI / 2; foam1.position.y = -1.35; foam1.name = 'foam1';
   scene.add(foam1);
-  const foam2 = new THREE.Mesh(new THREE.TorusGeometry(26.1, 0.32, 10, 80),
+  const foam2 = new THREE.Mesh(new THREE.TorusGeometry(28.1, 0.32, 10, 88),
     new THREE.MeshPhysicalMaterial({ flatShading: true,
       color: 0xffffff, transparent: true, opacity: 0.6, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1,
     }));
@@ -558,7 +558,7 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
 {
   // solid foam collar hugging the island exactly at the waterline (r≈12.3 @ y=-1.65)
   const collar = new THREE.Mesh(
-    new THREE.CylinderGeometry(21.45, 20.9, 0.62, 80, 1, true), foamCollarMat);
+    new THREE.CylinderGeometry(23.45, 22.9, 0.62, 80, 1, true), foamCollarMat);
   collar.position.y = -1.5; collar.name = 'foamCollar';
   scene.add(collar);
 }
@@ -569,7 +569,7 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
   });
   for (let i = 0; i < 44; i++) {
     const a = (i / 44) * Math.PI * 2 + R(-0.08, 0.08);
-    const rr = 24.4 + R(-0.5, 0.9);
+    const rr = 26.4 + R(-0.5, 0.9);
     const b = new THREE.Mesh(new THREE.SphereGeometry(R(0.1, 0.2), 10, 8), bubMat);
     b.position.set(Math.cos(a) * rr, -1.32, Math.sin(a) * rr);
     b.scale.y = 0.6;
@@ -582,13 +582,13 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
 const island = new THREE.Group(); scene.add(island);
 {
   const side = new THREE.Mesh(
-    new THREE.CylinderGeometry(24, 20, 3.2, 64, 1, true),
+    new THREE.CylinderGeometry(26, 22, 3.2, 64, 1, true),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9c6b3c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide })
   );
   side.position.y = -1.02; side.receiveShadow = true; side.castShadow = true;
   island.add(side);
   const top = new THREE.Mesh(
-    new THREE.CylinderGeometry(24, 24, 0.5, 64),
+    new THREE.CylinderGeometry(26, 26, 0.5, 64),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff, map: grassTex, bumpMap: grassBump, bumpScale: 0.15, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1})
   );
   top.position.y = 0.35; top.receiveShadow = true;
@@ -596,13 +596,14 @@ const island = new THREE.Group(); scene.add(island);
   const patchMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x66c142, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   const patchMat2 = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9cec7c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
   [[-6,-4,3.2],[6,-4.5,2.6],[-3,6.5,2.8],[7,5.5,2.2],[0,-5.5,2.0],[-10,3,2.0],[11,0,1.8],
-   [-13,9,2.8],[13,-9,3.0],[-15,-6,2.4],[15,11,2.6],[0,13,2.4],[-8,-13,2.6]]
+   [-13,9,2.8],[13,-9,3.0],[-15,-6,2.4],[15,11,2.6],[0,13,2.4],[-8,-13,2.6],
+   [-19,4,2.6],[19,-3,2.8],[-6,17,2.4],[4,-18,2.6]]
     .forEach(([x, z, r], i) => {
       const p = new THREE.Mesh(new THREE.CircleGeometry(r, 24), i % 2 ? patchMat2 : patchMat);
       p.rotation.x = -Math.PI / 2; p.position.set(x, 0.64, z); p.receiveShadow = true;
       island.add(p);
     });
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(23.35, 0.7, 12, 88),
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(25.35, 0.7, 12, 96),
     new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf2dfa8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
   rim.rotation.x = Math.PI / 2; rim.position.y = 0.35; rim.receiveShadow = true;
   island.add(rim);
@@ -610,10 +611,11 @@ const island = new THREE.Group(); scene.add(island);
 
 /* ---- marble path ---- */
 const pathPts2D = [
-  [-16.5, -9.5], [-13, -10.5], [-7, -10], [-1, -10.5], [5, -10], [11, -9.5],
+  [-19.5, -11], [-16.5, -9.5], [-13, -10.5], [-7, -10], [-1, -10.5], [5, -10], [11, -9.5],
   [15, -8], [16.5, -5.5], [15.5, -3], [12, -1.5], [7, -1], [1, -1.3],
   [-5, -0.8], [-11, -1.2], [-15, -0.5], [-16.5, 1.5], [-14, 3.5], [-9, 4.5],
   [-3, 5], [3, 4.6], [9, 5], [13, 5.8], [15, 7.5], [13.5, 9.5], [12, 11],
+  [10, 13], [7, 14.5],
 ];
 const curve = new THREE.CatmullRomCurve3(
   pathPts2D.map(([x, z]) => new THREE.Vector3(x, 0.6, z)), false, 'catmullrom', 0.35);
@@ -868,35 +870,35 @@ function nearPath(x, z, d = 1.9) {
     if ((p.x - x) ** 2 + (p.z - z) ** 2 < d * d) return true;
   }
   if ((x - SHOOTER_POS.x) ** 2 + (z - SHOOTER_POS.z) ** 2 < 25) return true; // clear stage round the star
-  if ((x - 12.4) ** 2 + (z - 11.5) ** 2 < 14) return true; // skull cave approach
-  if ((x + 16.5) ** 2 + (z + 9.5) ** 2 < 9) return true; // marble portal
+  if ((x - 7.4) ** 2 + (z - 15) ** 2 < 14) return true; // skull cave approach
+  if ((x + 19.5) ** 2 + (z + 11) ** 2 < 9) return true; // marble portal
   if ((x - 18.5) ** 2 + (z - 2.5) ** 2 < 4) return true; // egg shrine
   if ((x + 4.5) ** 2 + (z - 8.6) ** 2 < 10) return true; // house plot stays clear
   return false;
 }
 {
   let placed = 0, guard = 0;
-  while (placed < 30 && guard++ < 800) {
-    const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 19;
+  while (placed < 32 && guard++ < 900) {
+    const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 21;
     const x = Math.cos(a) * r, z = Math.sin(a) * r * 0.95;
     if (nearPath(x, z)) continue;
     chibiTree(x, z, 0.8 + Math.random() * 0.7); placed++;
   }
-  for (let i = 0; i < 18; i++) {
-    const a = Math.random() * 6.28, r = 4 + Math.random() * 16;
+  for (let i = 0; i < 20; i++) {
+    const a = Math.random() * 6.28, r = 4 + Math.random() * 18;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.4)) continue;
     rock(x, z, 0.7 + Math.random() * 0.9);
   }
   const fc = [0xff5d8f, 0xffca3a, 0xff595e, 0xffffff, 0xc77dff];
-  for (let i = 0; i < 48; i++) {
-    const a = Math.random() * 6.28, r = 2.5 + Math.random() * 19;
+  for (let i = 0; i < 54; i++) {
+    const a = Math.random() * 6.28, r = 2.5 + Math.random() * 21;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.2)) continue;
     flower(x, z, fc[i % fc.length]);
   }
-  for (let i = 0; i < 110; i++) {
-    const a = Math.random() * 6.28, r = 2 + Math.random() * 20;
+  for (let i = 0; i < 120; i++) {
+    const a = Math.random() * 6.28, r = 2 + Math.random() * 22;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (nearPath(x, z, 1.0)) continue;
     grassTuft(x, z);
@@ -1025,7 +1027,7 @@ function nearPath(x, z, d = 1.9) {
 const clouds = [];
 {
   const cm = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xffffff, roughness: 0.2, });
-  const spots = [[-21, 11, 0], [21, 11.5, 1], [-20, 12, -11], [20, 12.5, -12]];
+  const spots = [[-23, 11, 0], [23, 11.5, 1], [-22, 12, -12], [22, 12.5, -13]];
   spots.forEach(([cx, cy, cz], i) => {
     const g = new THREE.Group();
     for (let j = 0; j < 4; j++) {
