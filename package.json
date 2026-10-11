@@ -1,0 +1,19 @@
+{
+  "name": "gunbatte-balls",
+  "version": "1.0.0",
+  "description": "GunBatte Balls — a toy-diorama marble shooter demo (Three.js, no build step)",
+  "scripts": {
+    "start": "python3 -m http.server 8907",
+    "test": "node ./test/smoke.mjs"
+  },
+  "keywords": [
+    "game",
+    "three.js",
+    "zuma",
+    "demo"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.64.0"
+  }
+}

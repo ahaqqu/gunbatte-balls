@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GunBatte Balls — Koholint Island | Toy-Diorama Marble Shooter</title>
+<meta name="description" content="GunBatte Balls: a Zelda-inspired toy-diorama marble shooter. Guide a tiny tarsius guardian, blast power seeds, and stop the marbles from reaching the Skull Cave. Do your best!" />
+<meta name="theme-color" content="#2d6a4f" />
+<meta property="og:title" content="GunBatte Balls — Koholint Island" />
+<meta property="og:description" content="A tiny guardian. A hungry skull. 40 marbles. Ganbatte — do your best! Match 3+ to pop in this toy-diorama marble shooter!" />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%23e63946'/%3E%3Cellipse cx='23' cy='22' rx='9' ry='6' fill='white' opacity='.5'/%3E%3Ctext x='32' y='45' font-size='34' font-family='Verdana,sans-serif' font-weight='900' text-anchor='middle' fill='%23fffdf4'%3EG%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="style.css" />
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <div id="vignette"></div>
+  <div id="danger"></div>
+
+  <div id="hud">
+    <div class="hud-left">
+      <div id="logo">◉ GUNBATTE <span>BALLS</span></div>
+      <div id="subtitle">Koholint Island • Lv 1</div>
+      <div id="combo" class="hidden">COMBO <b>×2</b></div>
+    </div>
+    <div class="hud-center">
+      <div id="progress-wrap"><div id="progress-bar"></div><span id="progress-text">0 marbles</span></div>
+      <div id="badges">
+        <div id="badge-slow" class="badge hidden">❄ SLOW<div class="bar"><div></div></div></div>
+        <div id="badge-rev" class="badge hidden">↩ REWIND<div class="bar"><div></div></div></div>
+      </div>
+    </div>
+    <div class="hud-right">
+      <div class="score-box">SCORE<div id="score">0</div></div>
+      <div class="shooter-box">
+        <div class="ammo"><span class="lbl">NOW</span><div id="cur-ball" class="mini-ball"></div></div>
+        <div class="ammo"><span class="lbl">NEXT</span><div id="next-ball" class="mini-ball small"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="floaters"></div>
+
+  <div id="banner" class="hidden">
+    <div id="banner-main">READY</div>
+    <div id="banner-sub">Koholint Island</div>
+  </div>
+
+  <div id="hint">Move to aim • Click to shoot • Right-click / Space to swap • <b>P</b> pause • <b>M</b> sound</div>
+
+  <div id="corner-btns">
+    <button id="pause-btn" title="Pause (P)">❚❚</button>
+    <button id="mute-btn" title="Sound (M)">♪</button>
+  </div>
+
+  <div id="overlay">
+    <div class="card">
+      <div class="card-ribbon">● GANBATTE! DO YOUR BEST ●</div>
+      <h1>GUNBATTE<br/><em>BALLS</em></h1>
+      <p class="story">A tiny <b>tarsius</b> guards a toy-box <b>Koholint island</b>.<br/>Marble spirits roll toward the <b>Skull Cave</b> —<br/>blast them with seed-shots. Match <b>3+</b> to pop!</p>
+      <div class="seeds-legend">
+        <div><span class="seed bomb">B</span><b>Boomseed</b><i>blasts nearby marbles</i></div>
+        <div><span class="seed slow">S</span><b>Chillseed</b><i>slows the march</i></div>
+        <div><span class="seed rev">R</span><b>Rewindseed</b><i>rolls time back</i></div>
+      </div>
+      <div class="controls-row">
+        <div><b>Move</b><span>aim</span></div>
+        <div><b>Click</b><span>shoot</span></div>
+        <div><b>Space</b><span>swap</span></div>
+      </div>
+      <div class="diff-row">
+        <button class="diff-btn" data-diff="chill"><b>CHILL</b><span>gentle march</span></button>
+        <button class="diff-btn sel" data-diff="normal"><b>NORMAL</b><span>the real deal</span></button>
+        <button class="diff-btn" data-diff="spicy"><b>SPICY</b><span>skull is starving</span></button>
+      </div>
+      <button id="start-btn">▶ &nbsp;START ADVENTURE</button>
+      <p class="tiny">one level • 40 marbles • 3 difficulties • <span id="best-line">best: 0</span></p>
+    </div>
+  </div>
+
+  <div id="end-overlay" class="hidden">
+    <div class="card">
+      <h1 id="end-title">★ YOU WIN! ★</h1>
+      <div id="end-stars">★★★</div>
+      <p id="end-text" class="story"></p>
+      <div id="end-stats"></div>
+      <button id="restart-btn">↻ &nbsp;PLAY AGAIN</button>
+    </div>
+  </div>
+
+  <div id="pause-overlay" class="hidden">
+    <div class="card slim">
+      <h1 class="pause-h">❚❚ PAUSED</h1>
+      <p class="story">The marbles hold their breath…</p>
+      <button id="resume-btn">▶ &nbsp;RESUME</button><br/><br/>
+      <button id="restart-btn2" class="ghost">↻ RESTART LEVEL</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="game.js"></script>
+</body>
+</html>
