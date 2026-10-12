@@ -54,12 +54,6 @@ export function sanitizeHeld(G, level) {
   if (!act.includes(G.nxt)) G.nxt = act[(Math.random() * act.length) | 0];
 }
 
-/* Wild (color-neutral) shots: fired while the eagle ultimate is live.
-   A wild projectile copies the color of the ball it lands next to, so it
-   completes ANY pair into a trio. Stored as WILD in flight; converted to a
-   real color on insert, so popCheck needs no special cases. */
-export const WILD = -1;
-
 export function randPower(level) {
   const pool = level.powersAvailable?.length ? level.powersAvailable : ['bomb', 'slow', 'rev'];
   return pool[(Math.random() * pool.length) | 0];
@@ -172,17 +166,15 @@ export function insertShot(ctx, proj, hitIdx) {
   const toHit = proj.pos.clone().sub(hit.mesh.position);
   const ahead = toHit.dot(tangent) > 0;
   const idx = ahead ? hitIdx : hitIdx + 1;
-  // wild shots are chameleons: take the hit ball's color, then match anything
-  const c = proj.color === WILD ? hit.color : proj.color;
   let ns;
   if (idx === 0) ns = b[0].s + SPACING;
   else if (idx >= b.length) ns = b[b.length - 1].s - SPACING;
   else ns = (b[idx - 1].s + b[idx].s) / 2;
-  const mesh = makeBallMesh(kit, powerDefs, c, null);
+  const mesh = makeBallMesh(kit, powerDefs, proj.color, null);
   const p = pointAt(curve, curveLen, ns);
   mesh.position.copy(p); mesh.position.y = 1.15;
   scene.add(mesh);
-  b.splice(idx, 0, { s: ns, color: c, power: null, mesh, core: mesh.children[0] });
+  b.splice(idx, 0, { s: ns, color: proj.color, power: null, mesh, core: mesh.children[0] });
   for (let i = idx + 1; i < b.length; i++) {
     const want = b[i - 1].s - SPACING;
     if (b[i].s > want) b[i].s = want;

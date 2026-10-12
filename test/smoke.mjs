@@ -39,11 +39,50 @@ await page.waitForTimeout(300);
 const resumed = await page.evaluate(() => window.__game.status());
 console.log('PAUSE:', JSON.stringify({ paused, resumed }));
 
+// leap is right-click / hold on a tree now: real right-click on perch 1
+// must leap there, while left-click on the same tree just shoots.
+const treeScr = await page.evaluate(() => {
+  const X = window.__game;
+  const p = X.PERCHES[1];
+  const v = X.jalak.position.clone();
+  v.set(p.x, 3.2, p.z);
+  v.project(X.camera);
+  return { x: (v.x * 0.5 + 0.5) * 640, y: (-v.y * 0.5 + 0.5) * 400 };
+});
+await page.mouse.move(treeScr.x, treeScr.y);
+await page.mouse.click(treeScr.x, treeScr.y, { button: 'right' });
+await page.waitForTimeout(400);
+const leapRight = await page.evaluate(() => ({ perch: window.__game.G.perch }));
+// left-click the same tree AFTER the leap lands (shots are locked mid-air):
+// no leap, just aim + shoot.
+await page.waitForFunction(() => window.__game.G.leapT <= 0, null, { timeout: 30000 });
+const shots0 = await page.evaluate(() => window.__game.G.shots);
+await page.mouse.click(treeScr.x, treeScr.y);
+await page.waitForTimeout(400);
+const leapLeft = await page.evaluate((s0) => ({
+  perch: window.__game.G.perch, shots: window.__game.G.shots - s0,
+}), shots0);
+console.log('LEAP:', JSON.stringify({ right: leapRight, left: leapLeft }));
+
 // powers: full Jalak loop — fetch a bloomed seed, then unleash it via the
-// same right-click / hold dispatch players use (bomb on target, stop on the
-// lead marble, frenzy on any marble). No buttons, no keys.
+// same right-click / hold dispatch players use (bomb / stop / frenzy all
+// fire on ANY marble). No buttons, no keys.
 const pw = async (fn) => page.evaluate(fn);
 await pw(() => { window.__p = window.__game.spawnPickup('frenzy', 5, 5); });
+const treasureRes = await pw(() => {
+  const p = window.__p;
+  let boxes = 0, spheres = 0, gem = null;
+  p.chest.traverse(o => {
+    if (o.geometry?.type === 'BoxGeometry') boxes++;
+    if (o.geometry?.type === 'SphereGeometry') spheres++;
+    if (o.geometry?.type === 'OctahedronGeometry') gem = o.material.emissive.getHex();
+  });
+  return {
+    kind: p.kind, boxes, spheres, gem: gem?.toString(16),
+    halo: p.halo.material.emissive.getHex().toString(16),
+  };
+});
+console.log('TREASURE:', JSON.stringify(treasureRes));
 await pw(() => window.__game.fetchPickup(window.__p));
 await page.waitForFunction(() => window.__game.holding() === 'frenzy', null, { timeout: 30000 });
 await pw(() => {
@@ -61,12 +100,14 @@ await pw(() => window.__game.fetchPickup(window.__p2));
 await page.waitForFunction(() => window.__game.holding() === 'stop', null, { timeout: 30000 });
 await pw(() => {
   const X = window.__game;
-  const head = X.G.balls[0].mesh.position;
-  X.useHeldPowerAt({ x: head.x, z: head.z });
+  // stop fires on ANY marble (tail here) — the Jalak still pins the head
+  const tail = X.G.balls[X.G.balls.length - 1].mesh.position;
+  const ok = X.useHeldPowerAt({ x: tail.x, z: tail.z });
+  window.__stopOk = ok;
 });
 const holdRes = await pw(() => {
   const X = window.__game, G = X.G;
-  return { holdSet: +G.holdT.toFixed(2), mode: G.jalakMode };
+  return { fired: window.__stopOk, holdSet: +G.holdT.toFixed(2), mode: G.jalakMode, talonHidden: !X.nextOrb.visible };
 });
 const sh0 = await pw(() => window.__game.G.balls.length ? window.__game.G.balls[0].s : -1);
 await page.waitForTimeout(1200);
@@ -74,7 +115,9 @@ const sh1 = await pw(() => window.__game.G.balls.length ? window.__game.G.balls[
 holdRes.frozen = sh0 >= 0 && Math.abs(sh1 - sh0) < 0.001;
 await pw(() => { window.__game.G.holdT = 0.2; });
 await page.waitForFunction(() => window.__game.G.jalakMode === 'hover', null, { timeout: 15000 });
+await page.waitForTimeout(500); // let a frame run: the tuck flag flips in tick
 holdRes.released = 'hover';
+holdRes.talonBack = await pw(() => window.__game.nextOrb.visible);
 console.log('HOLD:', JSON.stringify(holdRes));
 await pw(() => { window.__p3 = window.__game.spawnPickup('bomb', 0, -8); });
 await page.waitForFunction(() => window.__game.G.jalakMode === 'hover', null, { timeout: 30000 });
@@ -128,15 +171,37 @@ console.log('EAGLE-SHOT:', JSON.stringify(eagleKill));
 // and carry it (game cannot complete while carriers hold balls).
 await pw(() => {
   const X = window.__game, G = X.G;
+  // drain live projectiles: no friendly fire on the pinned bird mid-rig
+  G.projectiles.slice().forEach(pr => {
+    X.scene.remove(pr.mesh); pr.trail.forEach(t => X.scene.remove(t));
+  });
+  G.projectiles.length = 0;
   G.balls.slice().forEach(b => b.mesh.parent?.remove(b.mesh));
   G.balls.length = 0; G.spawned = 40;
   for (let i = 0; i < 6; i++) X.spawnBall(20 - i * 1.14, i % 3);
   const e = X.eagles[0];
-  e.mode = 'circle'; e.group.visible = true; e.shadow.visible = true; e.stealBall = null;
-  e.stoopT = 0.01;
+  e.mode = 'circle'; e.t = 0; e.goneT = 0;
+  e.group.visible = true; e.shadow.visible = true;
+  e.stealBall = null; e.stealRef = null;
+  e.group.position.set(6, 8, -4); // pin nearby: bounds the stoop dive
+  e.wp.set(0, 8, -8);
+  X.eagles.forEach(x => { if (!x.stealBall) x.stoopT = 0.01; });
   window.__b0 = G.balls.length;
 });
-await page.waitForFunction(() => window.__game.eaglesHolding() > 0, null, { timeout: 90000 });
+try {
+  await page.waitForFunction(() => window.__game.eaglesHolding() > 0, null, { timeout: 90000 });
+} catch (err) {
+  const dbg = await pw(() => ({
+    status: window.__game.status(), balls: window.__game.ballCount(),
+    flock: window.__game.eagles.map(e => ({
+      mode: e.mode, stoopT: +e.stoopT.toFixed(2),
+      pos: e.group.position.toArray().map(v => +v.toFixed(1)).join(','),
+      steal: !!e.stealBall, vis: e.group.visible,
+    })),
+  }));
+  console.log('EAGLE-STEAL-DBG:', JSON.stringify(dbg));
+  throw err;
+}
 const stealRes = await pw(() => ({
   before: window.__b0, chain: window.__game.ballCount(),
   holding: window.__game.eaglesHolding(), steals: window.__game.G.eagleSteals,
@@ -176,33 +241,48 @@ await page.waitForTimeout(1500);
 capRes2.normalAfter = await pw(() => window.__game.eagles.length);
 console.log('EAGLE-CAP:', JSON.stringify({ ...capRes, ...capRes2 }));
 
-// ultimate: 3rd eagle kill loads 3 wild shots (tarsius blinks, cannon gold).
-// Wild copies the hit ball's color, so a BLUE-loaded shot pops a RED pair.
-// (Neutralize the flock first so no stoop photobombs the rig.)
-await pw(() => { window.__game.eagleDown(); window.__game.eagleDown(); });
-const ultRes = await pw(() => ({
-  hits: window.__game.G.eagleHits, wild: window.__game.G.wildShots,
-  ults: window.__game.G.ultimates, badge: !document.getElementById('badge-ult').classList.contains('hidden'),
+// ultimate REWIND: every 3rd eagle kill starts a slow backward drift
+// (no teleport: mid-read barely moved, final ≈ ultimateRollback).
+// Rig: stoops frozen, fresh chain, record/fire atomic, then await the drift.
+const ultRes = await pw(() => {
+  const X = window.__game, G = X.G;
+  X.eagles.forEach(e => { e.stoopT = 9999; });
+  G.balls.slice().forEach(b => b.mesh.parent?.remove(b.mesh));
+  G.balls.length = 0; G.spawned = 40;
+  for (let i = 0; i < 5; i++) X.spawnBall(30 - i * 1.14, i % 3);
+  const out = { s0: G.balls[0].s, u0: G.ultimates || 0, n0: G.balls.length };
+  for (let i = 0; i < 3 && (G.ultimates || 0) === out.u0; i++) X.eagleDown(X.eagles[0]);
+  out.mid = G.balls[0].s;
+  out.rewinding = G.rewindT > 0;
+  window.__ult = out;
+  return { hits: G.eagleHits, ults: G.ultimates };
+});
+await page.waitForFunction(() => window.__game.G.rewindT <= 0, null, { timeout: 90000 });
+const ultEnd = await pw(() => ({
+  pushed: +((window.__ult.s0 - window.__game.G.balls[0].s).toFixed(2)),
+  midPushed: +((window.__ult.s0 - window.__ult.mid).toFixed(2)),
+  chainKept: window.__game.G.balls.length === window.__ult.n0,
 }));
-console.log('ULTIMATE-ARMED:', JSON.stringify(ultRes));
+console.log('ULTIMATE-REWIND:', JSON.stringify({ ...ultRes, ...ultEnd }));
+// normal-shot pop still keeps streak/combo (double-splice regression guard)
 await pw(() => {
   const X = window.__game, G = X.G;
   X.eagles.forEach(e => { e.mode = 'gone'; e.goneT = 9999; e.group.visible = false; e.shadow.visible = false; });
   G.balls.slice().forEach(b => b.mesh.parent?.remove(b.mesh));
   G.balls.length = 0; G.spawned = 40;
   X.spawnBall(20, 0); X.spawnBall(20 - 1.14, 0); // RED pair, nothing more
-  G.cur = 1; G.nxt = 2; G.shootCD = 0; // loaded BLUE: only wild can pop this
-  const d0 = G.destroyed, s0 = G.streak;
-  window.__d0 = d0; window.__s0 = s0;
+  G.cur = 0; G.nxt = 2; G.shootCD = 0; // loaded RED: completes the trio
+  const d0 = G.destroyed;
+  window.__d0 = d0;
   const m = X.pointAt(20 - 0.57); X.shootAt(m.x, m.z);
 });
 await page.waitForTimeout(9000);
-const wildRes = await pw(() => ({
-  wildLeft: window.__game.G.wildShots, popped: window.__game.G.destroyed - window.__d0,
+const popRes = await pw(() => ({
+  popped: window.__game.G.destroyed - window.__d0,
   streak: window.__game.G.streak, combo: window.__game.G.combo,
-  curKept: window.__game.G.cur, balls: window.__game.ballCount(),
+  balls: window.__game.ballCount(),
 }));
-console.log('ULTIMATE-WILD:', JSON.stringify(wildRes));
+console.log('POP-CHECK:', JSON.stringify(popRes));
 
 // win flow (bomb test may have already won the game; restart handles both)
 await page.evaluate(() => document.getElementById('restart-btn').click());

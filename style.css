@@ -75,8 +75,6 @@ button { touch-action:manipulation; }
   font-size:17px; font-weight:900; cursor:pointer; box-shadow:0 3px 0 #3a2a1a; }
 #corner-btns button:active { transform:translateY(2px); box-shadow:none; }
 #mute-btn.off { color:#bbb; text-decoration:line-through; }
-#badge-ult { border-color:#7c2d12; color:#7c2d12; background:linear-gradient(#ffe89a,#ffc700); }
-#badge-ult b { color:#7c2d12; }
 
 /* ---- overlays ---- */
 #overlay, #end-overlay, #pause-overlay { position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center;

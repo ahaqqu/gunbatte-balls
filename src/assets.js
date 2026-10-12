@@ -428,3 +428,45 @@ export function buildEagle() {
   group.add(tail);
   return { group, refs: { wingL, wingR } };
 }
+
+/* Treasure chest pickup: unmistakably NOT a path marble (box silhouette,
+   wood + gold instead of the red/blue/green/yellow marble palette).
+   `accent` tints the lock jewel per power type. Returns { group, refs }
+   with refs = { lid, gem } for the idle creak/glint animation. */
+export const TREASURE_LID_OPEN = -0.55;
+export function buildTreasure(accent = 0xffc700) {
+  const group = new THREE.Group();
+  const wood = toy(0x7f4f24);
+  const darkWood = toy(0x5e3a1a);
+  const gold = toyGlow(0xffc700, { emissiveIntensity: 0.45 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.7), wood);
+  body.position.y = 0; body.castShadow = true;
+  group.add(body);
+  // lid hinged open at the back-top edge so the loot peeks out
+  const lid = new THREE.Group();
+  lid.position.set(0, 0.275, -0.35);
+  const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.26, 0.7), darkWood);
+  lidMesh.position.set(0, 0.13, 0.35); lidMesh.castShadow = true;
+  lid.add(lidMesh);
+  lid.rotation.x = TREASURE_LID_OPEN;
+  group.add(lid);
+  // gold straps binding body + lid
+  [-0.28, 0.28].forEach(sx => {
+    const strap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.57, 0.74), gold);
+    strap.position.set(sx, 0, 0); strap.castShadow = true;
+    group.add(strap);
+  });
+  // coin stack glinting inside
+  [[-0.15, 0.32, 0.05], [0.12, 0.32, -0.08], [0.0, 0.42, 0.02]].forEach(([cx, cy, cz], i) => {
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.09, 14), gold);
+    coin.position.set(cx, cy, cz); coin.rotation.y = i * 0.7; coin.castShadow = true;
+    group.add(coin);
+  });
+  // lock plate + glowing type jewel on the front face
+  const lock = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.06), gold);
+  lock.position.set(0, 0.02, 0.36); group.add(lock);
+  const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.15), toyGlow(accent, { emissiveIntensity: 1.1 }));
+  gem.position.set(0, 0.05, 0.44); gem.castShadow = true;
+  group.add(gem);
+  return { group, refs: { lid, gem } };
+}

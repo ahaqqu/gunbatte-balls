@@ -78,6 +78,8 @@ export const koholint = {
     eagleMaxChill: 3,    // max concurrent eagles by difficulty
     eagleMax: 5,         // normal
     eagleMaxSpicy: 10,   // spicy sky full of thieves
+    ultimateRollback: 14, // ULTIMATE REWIND: chain drifts back this far (s units)…
+    ultimateRewindDur: 2.2, // …over this many seconds (slow backward march)
   },
   scatter: { trees: 32, rocks: 20, flowers: 54, grass: 120 },
   fence: [[0.10, 0.30, 1], [0.36, 0.52, -1], [0.62, 0.80, 1]],
