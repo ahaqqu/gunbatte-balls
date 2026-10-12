@@ -22,13 +22,23 @@ game.js           → wires the above: scene + loop + input + HUD + window.__gam
   from here (no local duplicates).
 - **Mechanics** (`src/mechanics.js`): `baseSpeedFor`, `randColor`, `dealColor`,
   `sanitizeHeld`, `randPower`, `spawnBall`, `popCheck`, `insertShot`,
-  `triggerPower` (via `src/powers.js`). Every tunable number
+  `triggerPower` (via `src/powers.js`), plus the `WILD` sentinel for
+  color-neutral ultimate shots (`insertShot` converts a wild projectile to
+  the hit ball's color, so `popCheck` needs no special cases). Every tunable
+  number
   (`rollback`, `magnetSpeed`, `joinGap`, `dangerThreshold`, `slowFactor`,
   `reverseFactor`, `finalStandBrake`, `shootCooldown`, `projectileSpeed`,
   `bombRadius/Max`, `slowDur/revDur`, `spawnPowerEvery`) is read from
   `level.mechanics` / `level.powersAvailable` — never hardcoded.
   `game.js` keeps thin wrappers (`spawnBall`, `popCheck`, …) with identical
   signatures so `test/smoke.mjs` and the `window.__game` API are unchanged.
+  Eagle kills live in `game.js` (`eagleDown`, hitbox `EAGLE_HIT_R`): every
+  3rd kill loads 3 wild shots (`G.wildShots`, tarsius blinks, `★ ULTIMATE`
+  badge) — presentation only, the match rule stays in `insertShot`.
+  Eagles are a flock (`eagles[]`, cap 3 chill / 5 normal / 10 spicy via
+  `eagleMax*` + `eagleSpawnEvery`): stoops rip a marble off the chain into
+  the bird's talons, and `checkWin` requires zero carriers — stolen balls
+  come back only as smashed loot on the kill (`destroyed++`).
 - **Powers** (`src/powers.js`): `POWER_DEFS` + `registerPower(type, fn)` +
   `triggerPower(ctx, type, pos)`. The engine validates against
   `level.powersAvailable`; unknown/disallowed powers return `false` with no

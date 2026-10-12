@@ -75,6 +75,8 @@ button { touch-action:manipulation; }
   font-size:17px; font-weight:900; cursor:pointer; box-shadow:0 3px 0 #3a2a1a; }
 #corner-btns button:active { transform:translateY(2px); box-shadow:none; }
 #mute-btn.off { color:#bbb; text-decoration:line-through; }
+#badge-ult { border-color:#7c2d12; color:#7c2d12; background:linear-gradient(#ffe89a,#ffc700); }
+#badge-ult b { color:#7c2d12; }
 
 /* ---- overlays ---- */
 #overlay, #end-overlay, #pause-overlay { position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center;
@@ -102,6 +104,7 @@ button { touch-action:manipulation; }
 .seed { width:30px; height:30px; border-radius:50%; color:#fff; font-weight:900; font-size:17px; line-height:28px;
   border:2px solid #3a2a1a; box-shadow:inset -3px -4px 0 rgba(0,0,0,.25), inset 3px 4px 0 rgba(255,255,255,.35); }
 .seed.bomb { background:#2b2d42; } .seed.slow { background:#4361ee; } .seed.rev { background:#9d4edd; }
+.seed.stop { background:#4361ee; } .seed.frenzy { background:#ff9e00; }
 .controls-row { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0 12px; }
 .controls-row div { background:#f4f1de; border:2px solid #3a2a1a; border-radius:12px; padding:6px 14px; display:flex; flex-direction:column; }
 .controls-row b { font-size:15px; } .controls-row span { font-size:11px; color:#888; font-weight:700; }

@@ -1,18 +1,20 @@
 /* ============================================================
    POWERS — pluggable power-seed registry (mechanics layer).
-   The core engine never hardcodes bomb/slow/rev: each level
+   The core engine never hardcodes bomb/stop/frenzy: each level
    declares `powersAvailable: [...]` and the registry resolves
    handlers. New levels add powers by registering a new entry —
    same marble/particle assets, new behavior.
+
+   Delivery model: power seeds spawn as pickups on the grass. The
+   Jalak companion fetches them on click/tap, then holds one power
+   at a time. Bomb is aimed with right-click on the chain, stop and
+   frenzy fire from the held-power button (or E).
    ============================================================ */
 
 export const POWER_DEFS = {
   bomb: { letter: 'B', bg: '#2b2d42', name: 'BOOMSEED' },
-  slow: { letter: 'S', bg: '#4361ee', name: 'CHILLSEED' },
-  rev: { letter: 'R', bg: '#9d4edd', name: 'REWINDSEED' },
-  // Example 4th power for future levels (same assets, new behavior):
-  // STARDUST: bonus score + brief breathing room (small rollback).
-  star: { letter: '*', bg: '#ff9e00', name: 'STARDUST' },
+  stop: { letter: 'H', bg: '#4361ee', name: 'HOLDSEED' },
+  frenzy: { letter: 'F', bg: '#ff9e00', name: 'FRENZYSEED' },
 };
 
 const handlers = {};
@@ -47,45 +49,43 @@ function bombHandler(ctx, pos) {
   G.score += 10;
 }
 
-function slowHandler(ctx, pos) {
+function stopHandler(ctx, pos) {
+  // HOLDSEED: the Jalak grows huge, flies to the chain head and holds the
+  // marbles in place. step() freezes the march while G.holdT > 0 (the Jalak
+  // visual itself is driven by game.js from holdT).
   const { G, sfx, shockwave, burst, showBanner, floater } = ctx;
-  G.slowT = ctx.mechanics?.slowDur ?? 8; sfx('power');
-  shockwave(pos, 0x4cc9f0, 4);
+  if (G.holdT > 0) return;
+  G.holdT = ctx.mechanics?.holdDur ?? 6;
+  sfx('hold');
+  shockwave(pos, 0x4cc9f0, 5);
   burst(pos, 1, 16, 7);
-  showBanner('CHILLSEED!', 'the march slows…');
-  floater('+SLOW', pos, true);
+  showBanner('HOLDSEED!', 'the Jalak holds the march…');
+  floater('+HOLD', pos, true);
 }
 
-function revHandler(ctx, pos) {
-  const { G, sfx, shockwave, burst, showBanner, floater } = ctx;
-  G.revT = ctx.mechanics?.revDur ?? 6; sfx('power');
-  shockwave(pos, 0xf72585, 4);
-  burst(pos, 2, 16, 7);
-  showBanner('REWINDSEED!', 'time rolls back…');
-  floater('+REWIND', pos, true);
-}
-
-function starHandler(ctx, pos) {
-  // STARDUST: flat bonus + gentle chain rollback (breathing room).
-  // Reuses burst/shockwave/floater assets — no new art needed.
-  const { G, sfx, shockwave, burst, floater } = ctx;
-  const rollback = ctx.mechanics?.rollback ?? 1.2;
-  burst(pos, 3, 20, 9);
-  shockwave(pos, 0xffc700, 4);
-  sfx('power');
-  G.score += 40;
-  floater('+40 ★', pos, true);
-  if (G.balls.length) {
-    for (const x of G.balls) x.s -= rollback * 0.5;
-    const tail = G.balls[G.balls.length - 1].s;
-    if (tail < 0) for (const x of G.balls) x.s -= tail;
+function frenzyHandler(ctx, pos) {
+  // FRENZYSEED: the Jalak goes wild and plucks K random marbles across the
+  // whole chain (never a neat consecutive blast like the bomb). step()
+  // processes G.frenzyQ one ball per beat and drives the Jalak swoops.
+  const { G, sfx, showBanner, floater } = ctx;
+  if (G.frenzyQ.length || !G.balls.length) return;
+  const m = ctx.mechanics || {};
+  const lo = m.frenzyMin ?? 4, hi = m.frenzyMax ?? 8;
+  const k = Math.min(G.balls.length, lo + ((Math.random() * (hi - lo + 1)) | 0));
+  const pool = G.balls.slice();
+  for (let i = 0; i < k && pool.length; i++) {
+    const j = (Math.random() * pool.length) | 0;
+    G.frenzyQ.push(pool.splice(j, 1)[0]);
   }
+  G.frenzyT = 0;
+  sfx('frenzy');
+  showBanner('FRENZY!', 'the Jalak goes wild!');
+  floater('+FRENZY', pos, true);
 }
 
 registerPower('bomb', bombHandler);
-registerPower('slow', slowHandler);
-registerPower('rev', revHandler);
-registerPower('star', starHandler);
+registerPower('stop', stopHandler);
+registerPower('frenzy', frenzyHandler);
 
 /* Level-aware trigger: validates against the level's allow-list,
    runs the handler, then runs shared post-steps. Returns false for
