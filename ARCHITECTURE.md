@@ -29,6 +29,14 @@ game.js           → wires the above: scene + loop + input + HUD + window.__gam
   `level.mechanics` / `level.powersAvailable` — never hardcoded.
   `game.js` keeps thin wrappers (`spawnBall`, `popCheck`, …) with identical
   signatures so `test/smoke.mjs` and the `window.__game` API are unchanged.
+  Eagle kills live in `game.js` (`eagleDown`, hitbox `EAGLE_HIT_R`): every
+  3rd kill triggers the ULTIMATE REWIND — the march drifts backward
+  (`G.rewindT`, `ultimateRollback` over `ultimateRewindDur`, tail clamped
+  at the portal, pops suspended while reversing).
+  Eagles are a flock (`eagles[]`, cap 3 chill / 5 normal / 10 spicy via
+  `eagleMax*` + `eagleSpawnEvery`): stoops rip a marble off the chain into
+  the bird's talons, and `checkWin` requires zero carriers — stolen balls
+  come back only as smashed loot on the kill (`destroyed++`).
 - **Powers** (`src/powers.js`): `POWER_DEFS` + `registerPower(type, fn)` +
   `triggerPower(ctx, type, pos)`. The engine validates against
   `level.powersAvailable`; unknown/disallowed powers return `false` with no

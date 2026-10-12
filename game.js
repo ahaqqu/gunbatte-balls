@@ -13,7 +13,7 @@ import {
   spawnBall as mechSpawnBall, popCheck as mechPopCheck,
   insertShot as mechInsertShot, triggerPower as mechTrigger,
 } from './src/mechanics.js';
-import { makeBallMesh as assetsMakeBallMesh, toy, toyGlow, sculpt, roundRockGeo, R } from './src/assets.js';
+import { makeBallMesh as assetsMakeBallMesh, toy, toyGlow, sculpt, roundRockGeo, R, buildJalak, buildEagle, buildTreasure, TREASURE_LID_OPEN, makeGroundBlob } from './src/assets.js';
 import { buildCurve, perchVectors, createNearPathChecker } from './src/environment.js';
 
 /* ============================================================
@@ -96,6 +96,10 @@ function sfx(kind) {
     case 'lose': [67, 64, 60, 55].forEach((m, i) => tone(mf(m), mf(m) * 0.97, 0.3, 'sawtooth', 0.08, i * 0.18)); break;
     case 'click': tone(880, 880, 0.05, 'square', 0.05); break;
     case 'leap': tone(280, 760, 0.18, 'sine', 0.1); tone(560, 990, 0.12, 'sine', 0.06, 0.08); break;
+    case 'grab': tone(900, 1400, 0.1, 'triangle', 0.1); tone(1200, 1700, 0.08, 'sine', 0.07, 0.06); break;
+    case 'hold': tone(220, 440, 0.3, 'triangle', 0.12); tone(330, 660, 0.3, 'sine', 0.08, 0.1); break;
+    case 'frenzy': [88, 92, 95, 100].forEach((m, i) => tone(mf(m), mf(m) * 1.02, 0.1, 'sawtooth', 0.08, i * 0.05)); break;
+    case 'screech': tone(2400, 900, 0.35, 'sawtooth', 0.09); tone(1800, 700, 0.3, 'square', 0.05, 0.05); break;
   }
 }
 /* tiny island BGM: plucked pentatonic loop + bass */
@@ -1449,6 +1453,349 @@ const aimLine = new THREE.Points(aimGeo, new THREE.PointsMaterial({
   color: 0xffffff, size: 0.28, transparent: true, opacity: 0.85, sizeAttenuation: true }));
 tarsiusBody.add(aimLine);
 
+/* ==================== JALAK COMPANION + ELANG JAWA ====================
+   Jalak (Bali starling): hovers by the tarsius carrying the NEXT marble
+   in its talons (swap tosses it over), fetches power seeds from the
+   grass on click/tap, drops bombs on right-click targets, grows huge to
+   hold the chain head, and goes frenzy-plucking random marbles.
+   Elang Jawa: unpredictable circling raptor flock. Shoot carriers (+50) or
+   they keep stealing marbles off the march. */
+const jalak = buildJalak();
+scene.add(jalak.group);
+const heldSprite = letterSprite('B', POWERS.bomb.bg);
+heldSprite.position.set(0, 1.15, 0); heldSprite.visible = false;
+jalak.group.add(heldSprite);
+// NEXT marble rides in the Jalak's talons (no more floating sky-orb)
+jalak.refs.talon.add(nextOrb); nextOrb.position.set(0, -0.35, 0); nextOrb.scale.setScalar(0.62);
+/* Elang Jawa flock: thieving raptors that stoop on the CHAIN and carry
+   marbles off in their talons. A stolen ball leaves the chain entirely —
+   the game cannot complete until its carrier is shot down (the ball is
+   smashed on the kill: +15 & counts as destroyed). Flock cap by
+   difficulty: chill 3, normal 5, spicy 10. */
+const eagles = []; // {group, refs, shadow, wp, mode, t, stoopT, goneT, fleeDir, stealBall}
+function eagleCap() {
+  const m = LEVEL.mechanics;
+  if (G.diff === 'spicy') return m.eagleMaxSpicy ?? 10;
+  if (G.diff === 'chill') return m.eagleMaxChill ?? 3;
+  return m.eagleMax ?? 5;
+}
+function pickEagleWP(e, h) {
+  e.wp.set(R(-20, 20), h ?? R(6, 10), R(-16, 14));
+}
+function spawnEagle() {
+  const built = buildEagle();
+  scene.add(built.group);
+  const shadow = groundBlob(0, 0, 1.6, 0.22);
+  const e = {
+    group: built.group, refs: built.refs, shadow,
+    wp: new THREE.Vector3(10, 8, -8),
+    mode: 'circle', t: 0,
+    stoopT: (LEVEL.mechanics.eagleStoopEvery ?? 18) * (0.8 + Math.random() * 0.4),
+    goneT: 0, fleeDir: new THREE.Vector3(1, 0, 0),
+    stealBall: null, stealRef: null,
+  };
+  const a = Math.random() * Math.PI * 2;
+  e.group.position.set(Math.cos(a) * 24, 14, Math.sin(a) * 24);
+  pickEagleWP(e, 9);
+  eagles.push(e);
+  return e;
+}
+function clearEagles() {
+  for (const e of eagles) {
+    if (e.stealBall) e.group.remove(e.stealBall.mesh);
+    scene.remove(e.group);
+    scene.remove(e.shadow);
+  }
+  eagles.length = 0;
+}
+const eaglesHolding = () => eagles.filter(e => e.stealBall).length;
+const pickupHit = []; // invisible tap targets, parallel to G.pickups
+let bombFall = null; // { mesh, t, target } while a dropped bomb falls
+jalakHome(jalak.group.position); // first eagle spawns in resetGame via spawnEagle()
+function jalakHome(out) {
+  return (out || new THREE.Vector3()).set(
+    tarsius.position.x + 1.7, tarsius.position.y + 4.1, tarsius.position.z + 0.9);
+}
+function setHeldSprite() {
+  // Reap stale letter badges (older builds added a fresh sprite per fetch
+  // without removing it, so the Jalak visibly "still held" spent powers).
+  for (const c of jalak.group.children.slice()) {
+    if (c.isSprite && c !== heldSprite) {
+      jalak.group.remove(c);
+      if (c.material.map) c.material.map.dispose();
+      c.material.dispose();
+    }
+  }
+  if (!heldSprite.parent) jalak.group.add(heldSprite);
+  heldSprite.visible = !!G.holding;
+  if (G.holding && POWERS[G.holding]) {
+    // swap the badge art in place — heldSprite is the ONE sprite child
+    const fresh = letterSprite(POWERS[G.holding].letter, POWERS[G.holding].bg);
+    if (heldSprite.material.map) heldSprite.material.map.dispose();
+    heldSprite.material.map = fresh.material.map;
+    heldSprite.material.needsUpdate = true;
+    fresh.material.map = null;
+    fresh.material.dispose();
+  }
+}
+function groundFromClient(cx, cy) {
+  mouseNDC.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  ray.setFromCamera(mouseNDC, camera);
+  const pt = new THREE.Vector3();
+  return ray.ray.intersectPlane(groundPlane, pt) ? pt : null;
+}
+function pickupFromClient(cx, cy) {
+  mouseNDC.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  ray.setFromCamera(mouseNDC, camera);
+  const hits = ray.intersectObjects(pickupHit, false);
+  return hits.length ? G.pickups.find(p => p.hit === hits[0].object) || null : null;
+}
+/* Power seeds bloom as TREASURE CHESTS on the grass — box silhouette in
+   wood + gold, never the path marbles' red/blue/green/yellow spheres.
+   Click/tap one and the Jalak fetches it, then holds a single power. */
+const PICKUP_ACCENT = { bomb: 0xff5d8f, stop: 0x4cc9f0, frenzy: 0xff9e00 };
+function spawnPickup(type = null, x = null, z = null) {
+  if (G.pickups.length >= (LEVEL.pickupMax ?? 3)) return null;
+  const t = (type && POWERS[type]) ? type : randPower();
+  let px = x, pz = z;
+  if (px === null) {
+    let ok = false;
+    for (let k = 0; k < 24 && !ok; k++) {
+      const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 19;
+      const cx = Math.cos(a) * r, cz = Math.sin(a) * r * 0.95;
+      if (!nearPath(cx, cz, 2.4)) { px = cx; pz = cz; ok = true; }
+    }
+    if (!ok) return null;
+  }
+  const g = new THREE.Group();
+  const chest = buildTreasure(PICKUP_ACCENT[t] ?? 0xffc700);
+  chest.group.position.y = 1.0; g.add(chest.group);
+  const accent = PICKUP_ACCENT[t] ?? 0xffe8a3;
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.09, 10, 24),
+    new THREE.MeshPhysicalMaterial({ flatShading: true, color: accent, emissive: accent, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+  halo.rotation.x = Math.PI / 2; halo.position.y = 1.0; g.add(halo);
+  const tag = letterSprite(POWERS[t].letter, POWERS[t].bg);
+  tag.position.y = 2.3; g.add(tag);
+  const hit = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 3, 8),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }));
+  hit.position.y = 1.4; g.add(hit);
+  g.position.set(px, 0.6, pz);
+  scene.add(g);
+  groundBlob(px, pz, 1.0, 0.2);
+  const p = { type: t, x: px, z: pz, mesh: g, chest: chest.group, chestRefs: chest.refs, halo, hit, age: 0, kind: 'treasure' };
+  hit.userData.pickup = p;
+  G.pickups.push(p); pickupHit.push(hit);
+  return p;
+}
+function removePickup(p) {
+  const i = G.pickups.indexOf(p);
+  if (i >= 0) G.pickups.splice(i, 1);
+  const j = pickupHit.indexOf(p.hit);
+  if (j >= 0) pickupHit.splice(j, 1);
+  scene.remove(p.mesh);
+}
+function fetchPickup(p) {
+  if (!p || G.pickups.indexOf(p) < 0) return false;
+  if (G.status !== 'playing' || G.paused) return false;
+  if (G.jalakMode !== 'hover') { floater('Jalak is busy…', jalak.group.position.clone()); return false; }
+  if (G.holding) { floater('already carrying treasure!', jalak.group.position.clone()); return false; }
+  G.jalakMode = 'fetch';
+  G.jalakFrom = jalak.group.position.clone();
+  G.jalakTo = new THREE.Vector3(p.x, 2.4, p.z);
+  G.jalakPayload = p;
+  G.jalakT = 0.55;
+  sfx('click');
+  return true;
+}
+/* Right-click (mouse) / long-press (touch) on the chain: unleash the held
+   seed through the Jalak. No buttons, no keys — the gesture IS the trigger:
+   - bomb: drop on the clicked spot (nearest marble within 7 units)
+   - stop: click ANY marble (the Jalak still flies up and pins the head)
+   - frenzy: target ANY marble (the Jalak plucks at random from there) */
+function dropBombAt(pt) {
+  if (G.holding !== 'bomb') return false;
+  if (G.jalakMode !== 'hover' && G.jalakMode !== 'return') return false;
+  if (G.status !== 'playing' || G.paused) return false;
+  let best = null, bestD = 7 * 7;
+  for (const b of G.balls) {
+    const dx = b.mesh.position.x - pt.x, dz = b.mesh.position.z - pt.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD) { bestD = d2; best = b; }
+  }
+  if (!best) { floater('no target…', new THREE.Vector3(pt.x, 2, pt.z)); return false; }
+  G.holding = null; setHeldSprite(); updateHUD();
+  G.jalakMode = 'bomb';
+  G.jalakFrom = jalak.group.position.clone();
+  G.jalakTo = new THREE.Vector3(best.mesh.position.x, 6.5, best.mesh.position.z);
+  G.jalakPayload = best.mesh.position.clone();
+  G.jalakT = 0.55;
+  sfx('leap');
+  return true;
+}
+/* HOLDSEED: the Jalak grows huge and pins the chain head. Fired by
+   right-click / long-press on ANY marble (easiest target wins). */
+function fireHold() {
+  if (G.holding !== 'stop') return false;
+  if (G.jalakMode !== 'hover' && G.jalakMode !== 'return') return false;
+  if (G.status !== 'playing' || G.paused) return false;
+  if (!G.balls.length) return false;
+  const anchor = G.balls[0].mesh.position.clone();
+  G.holding = null; setHeldSprite();
+  triggerPower('stop', anchor);
+  G.jalakMode = 'hold';
+  updateHUD();
+  return true;
+}
+/* FRENZYSEED: the Jalak goes wild and plucks random marbles. Fired by
+   right-click / long-press on ANY marble. */
+function fireFrenzy() {
+  if (G.holding !== 'frenzy') return false;
+  if (G.jalakMode !== 'hover' && G.jalakMode !== 'return') return false;
+  if (G.status !== 'playing' || G.paused) return false;
+  if (!G.balls.length) return false;
+  const anchor = jalak.group.position.clone();
+  G.holding = null; setHeldSprite();
+  triggerPower('frenzy', anchor);
+  if (G.frenzyQ.length) G.jalakMode = 'frenzy';
+  updateHUD();
+  return true;
+}
+function nearestBallTo(pt, maxD = 3.5) {
+  let best = null, bestD = maxD * maxD;
+  for (const b of G.balls) {
+    const dx = b.mesh.position.x - pt.x, dz = b.mesh.position.z - pt.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD) { bestD = d2; best = b; }
+  }
+  return best;
+}
+/* Single entry for right-click / touch-hold gestures. Returns true when a
+   power actually fired. */
+function useHeldPowerAt(pt) {
+  if (G.status !== 'playing' || G.paused) return false;
+  if (!G.holding) { floater('fetch a treasure first!', jalak.group.position.clone()); return false; }
+  if (G.jalakMode !== 'hover' && G.jalakMode !== 'return') { floater('Jalak is busy…', jalak.group.position.clone()); return false; }
+  if (G.holding === 'bomb') return dropBombAt(pt);
+  if (G.holding === 'stop') {
+    if (!G.balls.length) return false;
+    // any marble on the path works — the Jalak still flies up and pins the head
+    if (!nearestBallTo(pt, 3.5)) {
+      floater('pick a marble!', new THREE.Vector3(pt.x, 2.2, pt.z));
+      return false;
+    }
+    return fireHold();
+  }
+  if (G.holding === 'frenzy') {
+    const hit = nearestBallTo(pt, 3.5);
+    if (!hit) {
+      floater('pick a marble!', new THREE.Vector3(pt.x, 2.2, pt.z));
+      return false;
+    }
+    return fireFrenzy();
+  }
+  return false;
+}
+/* Eagle hit test: swept XZ segment (no tunneling past the fast stoop) plus a
+   screen-space fallback, so aiming AT the bird on screen connects — the
+   ground-plane aim point for a high-flying bird otherwise lands behind it
+   and visual hits would never register. Either test scoring downs the bird. */
+const EAGLE_HIT_R = 2.0; // matches the eagle's broad wingspan, not a point
+const _ev1 = new THREE.Vector3(), _ev2 = new THREE.Vector3();
+function segHitsEagle(px, pz, cx, cz, ex, ez, r) {
+  const dx = cx - px, dz = cz - pz;
+  const len2 = dx * dx + dz * dz;
+  let t = len2 > 0 ? ((ex - px) * dx + (ez - pz) * dz) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const ox = ex - (px + dx * t), oz = ez - (pz + dz * t);
+  return ox * ox + oz * oz < r * r;
+}
+function screenHitsPos(pr, pos) {
+  _ev1.copy(pos).project(camera);
+  _ev2.set(pr.pos.x, 1.15, pr.pos.z).project(camera);
+  const dx = _ev1.x - _ev2.x, dy = _ev1.y - _ev2.y;
+  return dx * dx + dy * dy < 0.075 * 0.075;
+}
+/* Compat wrapper: tests probe the lead eagle through the old name. */
+function screenHitsEagle(pr) {
+  return eagles.length ? screenHitsPos(pr, eagles[0].group.position) : false;
+}
+function destroyBall(ball, pts = 15) {
+  const i = G.balls.indexOf(ball);
+  if (i < 0) return false;
+  burst(ball.mesh.position.clone(), ball.color, 8, 7);
+  scene.remove(ball.mesh); G.balls.splice(i, 1);
+  G.destroyed++; G.score += pts;
+  return true;
+}
+function featherBurst(pos) {
+  if (G.sim) return;
+  const cols = [0xffffff, 0x5a3a22, 0xfdfdf8];
+  for (let i = 0; i < 16; i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.1 + Math.random() * 0.1, 10, 8),
+      new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.3, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.2, color: cols[i % 3] }));
+    m.position.copy(pos);
+    const v = new THREE.Vector3((Math.random() - 0.5) * 10, Math.random() * 8 + 2, (Math.random() - 0.5) * 10);
+    G.particles.push({ m, v, life: 0.8 + Math.random() * 0.4 });
+    scene.add(m);
+  }
+}
+function eagleDown(e = eagles[0]) {
+  if (!e) return false;
+  G.score += 50;
+  G.eagleHits = (G.eagleHits || 0) + 1;
+  featherBurst(e.group.position.clone());
+  shockwave(new THREE.Vector3(e.group.position.x, 1.2, e.group.position.z), 0xffffff, 4);
+  floater('EAGLE DOWN +50!', e.group.position.clone(), true);
+  sfx('big');
+  // the kill smashes whatever the bird was carrying: the stolen ball counts
+  // as destroyed, so shooting carriers is how the island gets completed
+  if (e.stealBall) {
+    const m = e.stealBall.mesh;
+    e.group.remove(m);
+    burst(e.group.position.clone(), e.stealBall.color, 10, 8);
+    G.destroyed++; G.score += 15;
+    floater('BALL BACK +15!', e.group.position.clone(), true);
+    e.stealBall = null; e.stealRef = null;
+    sanitizeHeld();
+    bumpScore(); updateHUD(); checkWin();
+  }
+  // every 3rd kill triggers the ULTIMATE — REWIND: the march drifts
+  // backward over ultimateRewindDur (see step(): reversing branch).
+  if (G.eagleHits % 3 === 0) {
+    G.ultimates = (G.ultimates || 0) + 1;
+    G.rewindT = LEVEL.mechanics.ultimateRewindDur ?? 2.2;
+    const anchor = G.balls.length ? G.balls[0].mesh.position.clone()
+      : new THREE.Vector3(tarsius.position.x, 1.5, tarsius.position.z);
+    shockwave(anchor, 0xffc700, 6);
+    shockwave(new THREE.Vector3(tarsius.position.x, 1.5, tarsius.position.z), 0xffc700, 6);
+    showBanner('★ ULTIMATE: REWIND! ★', 'the march is pushed back!');
+    floater('REWIND!', e.group.position.clone(), true);
+    sfx('power');
+    updateHUD();
+  }
+  e.fleeDir.set(e.group.position.x, 0, e.group.position.z);
+  if (e.fleeDir.lengthSq() < 0.01) e.fleeDir.set(1, 0, 0);
+  e.fleeDir.normalize();
+  e.mode = 'flee';
+  e.t = 0;
+  e.goneT = (LEVEL.mechanics.eagleGoneDur ?? 22) * (0.8 + Math.random() * 0.4);
+  bumpScore(); updateHUD();
+  return true;
+}
+function eagleStoop(e) {
+  // The mischief when nobody shoots it: stoop on the CHAIN and rip a marble
+  // out of the march. The carrier keeps circling with its prize — shoot it
+  // down or the island can never be completed.
+  sfx('screech');
+  if (!G.balls.length) { e.stoopT = 6; return; } // nothing to steal yet
+  const target = G.balls[(Math.random() * G.balls.length) | 0];
+  e.mode = 'stoop';
+  e.t = 0;
+  e.wp.set(target.mesh.position.x, 2.4, target.mesh.position.z);
+  e.stealRef = target;
+  showBanner('ELANG JAWA STOOPS!', 'it steals your marbles — shoot it down!');
+}
+
 /* ==================== GAME STATE ==================== */
 const ballGeo = new THREE.SphereGeometry(BALL_R, 32, 24);
 const ballMats = PALETTE.map(c => marbleMat(c));
@@ -1483,6 +1830,15 @@ const G = {
   perch: 0, leapT: 0, leapFrom: null, // tree-perch state + leap animation
   cur: 0, nxt: 1, shootCD: 0, blink: 0, recoil: 0, happy: 0, flash: 0,
   slowT: 0, revT: 0, shake: 0, danger: false, heartT: 0,
+  holdT: 0, // HOLDSEED freeze: the Jalak holds the chain head
+  rewindT: 0, // ULTIMATE rewind: the march drifts backward while > 0
+  pickups: [], pickupT: 8, // power seeds waiting on the grass
+  frenzyQ: [], frenzyT: 0, // FRENZYSEED random-pluck queue
+  jalakMode: 'hover', jalakT: 0, jalakFrom: null, jalakTo: null, jalakPayload: null,
+  holding: null, swapT: 0, // held power type + swap-toss animation timer
+  eagleSpawnT: 14, eagleSteals: 0, // flock pressure: reinforcement timer + stolen count
+  eagleHits: 0,
+  ultimates: 0, // eagle ultimate (REWIND) trigger count
   best: 0,
 };
 try { G.best = +(localStorage.getItem('gunbatte-balls-best') || 0); } catch { /* private mode */ }
@@ -1525,7 +1881,9 @@ function updateHUD() {
   if (G.sim) return;
   $('score').textContent = G.score;
   $('progress-bar').style.width = `${Math.min(100, (G.destroyed / TOTAL_BALLS) * 100)}%`;
-  $('progress-text').textContent = `${G.destroyed}/${TOTAL_BALLS} popped • ${G.balls.length} on island`;
+  const held = eaglesHolding();
+  $('progress-text').textContent = `${G.destroyed}/${TOTAL_BALLS} popped • ${G.balls.length} on island` +
+    (held ? ` • ${held} stolen by eagles!` : '');
   $('cur-ball').style.background = PALETTE_CSS[G.cur];
   $('next-ball').style.background = PALETTE_CSS[G.nxt];
   curOrb.material = ballMats[G.cur]; nextOrb.material = ballMats[G.nxt];
@@ -1535,10 +1893,8 @@ function updateHUD() {
     const b = cb.querySelector('b'); if (b) b.textContent = '×' + G.combo;
     else cb.innerHTML = `COMBO <b>×${G.combo}</b>`;
   } else cb.classList.add('hidden');
-  $('badge-slow').classList.toggle('hidden', !(G.slowT > 0));
-  $('badge-rev').classList.toggle('hidden', !(G.revT > 0));
-  if (G.slowT > 0) $('badge-slow').querySelector('.bar div').style.width = `${(G.slowT / 8) * 100}%`;
-  if (G.revT > 0) $('badge-rev').querySelector('.bar div').style.width = `${(G.revT / 6) * 100}%`;
+  $('badge-slow').classList.toggle('hidden', !(G.holdT > 0));
+  if (G.holdT > 0) $('badge-slow').querySelector('.bar div').style.width = `${(G.holdT / (LEVEL.mechanics.holdDur ?? 6)) * 100}%`;
   $('danger').classList.toggle('active', G.danger && G.status === 'playing');
 }
 function bumpScore() {
@@ -1598,7 +1954,9 @@ function popCheck(startIdx) {
   return mechPopCheck(mechCtx(), startIdx);
 }
 function checkWin() {
-  if (G.status === 'playing' && G.spawned >= TOTAL_BALLS && G.balls.length === 0) endGame(true);
+  // stolen marbles count too: carriers must be shot down before the island
+  // is truly clear (their loot is smashed on the kill: +15 & destroyed++)
+  if (G.status === 'playing' && G.spawned >= TOTAL_BALLS && G.balls.length === 0 && !eaglesHolding()) endGame(true);
 }
 function shoot() {
   if (G.status !== 'playing' || G.shootCD > 0 || G.paused || G.leapT > 0) return;
@@ -1651,12 +2009,12 @@ function endGame(win) {
     $('end-stars').innerHTML = [1, 2, 3].map(i =>
       `<span class="${i <= stars ? '' : 'dim'}">★</span>`).join('');
     $('end-text').innerHTML = 'The island is safe! The tarsius does a happy wiggle.';
-    const acc = G.shots ? Math.round((G.hits / G.shots) * 100) : 100;
     const mm = `${(G.playTime / 60) | 0}:${String((G.playTime | 0) % 60).padStart(2, '0')}`;
     $('end-stats').innerHTML =
       `<div>SCORE<b>${G.score}</b></div><div>BEST<b>${G.best}</b></div>` +
       `<div>TIME<b>${mm}</b></div><div>MAX COMBO<b>×${G.maxCombo}</b></div>` +
-      `<div>ACCURACY<b>${acc}%</b></div><div>SEEDS<b>${G.powersUsed}</b></div>`;
+      `<div>EAGLE HITS<b>${G.eagleHits || 0}</b></div><div>SEEDS<b>${G.powersUsed}</b></div>` +
+      `<div>STOLEN<b>${G.eagleSteals || 0}</b></div><div>ULTIMATES<b>${G.ultimates || 0}</b></div>`;
     sfx('win');
   } else {
     $('end-title').textContent = '☠ SKULL CAVE HUNGRY…';
@@ -1673,6 +2031,8 @@ function resetGame() {
   G.projectiles.forEach(x => { scene.remove(x.mesh); x.trail.forEach(t => scene.remove(t)); });
   G.particles.forEach(x => scene.remove(x.m));
   G.rings.forEach(x => scene.remove(x.m));
+  G.pickups.slice().forEach(removePickup);
+  if (bombFall) { scene.remove(bombFall.mesh); bombFall = null; }
   Object.assign(G, {
     balls: [], projectiles: [], particles: [], rings: [],
     spawned: 0, destroyed: 0, score: 0, combo: 1, maxCombo: 1,
@@ -1680,13 +2040,24 @@ function resetGame() {
     playTime: 0, shootCD: 0, slowT: 0, revT: 0, shake: 0,
     danger: false, heartT: 0, paused: false, introT: 1.8,
     status: 'intro', cur: 0, nxt: 1, perch: 0, leapT: 0, leapFrom: null,
+    holdT: 0, rewindT: 0, pickups: [], pickupT: 8, frenzyQ: [], frenzyT: 0,
+    jalakMode: 'hover', jalakT: 0, jalakFrom: null, jalakTo: null, jalakPayload: null,
+    holding: null, swapT: 0,
+    eagleSpawnT: (LEVEL.mechanics.eagleSpawnEvery ?? 20) * 0.8, eagleSteals: 0,
+    eagleHits: 0, ultimates: 0,
   });
   tarsius.position.copy(PERCHES[0]); tarsius.rotation.y = 0;
+  tarsius.visible = true;
+  jalakHome(jalak.group.position);
+  jalak.group.scale.setScalar(1);
+  nextOrb.visible = true; // hold-tuck never survives a reset
+  setHeldSprite();
+  clearEagles();
+  spawnEagle();
   $('end-overlay').classList.add('hidden');
   $('pause-overlay').classList.add('hidden');
   for (let i = 0; i < LEVEL.initialBalls; i++) {
-    const initPw = (i === LEVEL.initialBombIndex && LEVEL.powersAvailable.includes('bomb')) ? 'bomb' : null;
-    spawnBall(LEVEL.initialHeadS - i * SPACING, randColor(), initPw);
+    spawnBall(LEVEL.initialHeadS - i * SPACING, randColor(), null);
   }
   G.spawned = LEVEL.initialBalls;
   // Deal the shooter's seeds from the freshly spawned path so both are live colors.
@@ -1742,43 +2113,84 @@ function leapTo(i) {
 }
 function doSwap() {
   if (G.status !== 'playing' || G.paused) return;
-  const t = G.cur; G.cur = G.nxt; G.nxt = t; sfx('swap'); updateHUD();
+  const t = G.cur; G.cur = G.nxt; G.nxt = t;
+  G.swapT = 0.32; // the Jalak tosses the talon marble over to the cannon
+  sfx('swap'); updateHUD();
 }
 // Touch: drag on the island to aim, release to shoot (so aiming never
-// misfires). Mouse keeps the classic move-to-aim, click-to-shoot.
+// misfires). Press-and-hold (~550ms) is the gesture twin of desktop
+// right-click: hold a TREE to leap there, hold a marble for Jalak power.
+// Mouse: move-to-aim, click-to-shoot, right-click = leap-or-power.
 let touchAimId = null;
+let touchHoldTimer = 0, touchHoldFired = false, touchHoldX = 0, touchHoldY = 0;
+function clearTouchHold() {
+  if (touchHoldTimer) { clearTimeout(touchHoldTimer); touchHoldTimer = 0; }
+}
 addEventListener('pointermove', e => {
   if (e.pointerType === 'touch' || e.pointerType === 'pen') {
     if (e.pointerId !== touchAimId) return;
+    // dragging cancels the long-press gesture (leap or power)
+    if (touchHoldTimer && Math.hypot(e.clientX - touchHoldX, e.clientY - touchHoldY) > 14) clearTouchHold();
   }
   setAimFromClient(e.clientX, e.clientY);
 });
 addEventListener('pointerdown', e => {
   if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
   audio();
-  if (e.button === 2) { doSwap(); return; }
   if (e.pointerType === 'touch' || e.pointerType === 'pen') {
-    const pi = perchFromClient(e.clientX, e.clientY);
-    if (pi >= 0 && pi !== G.perch) { touchAimId = null; leapTo(pi); return; }
+    // tap a bloomed seed: the Jalak fetches it (never misfires a shot)
+    const pk = pickupFromClient(e.clientX, e.clientY);
+    if (pk) { touchAimId = null; fetchPickup(pk); return; }
     touchAimId = e.pointerId;
+    touchHoldFired = false;
+    touchHoldX = e.clientX; touchHoldY = e.clientY;
+    clearTouchHold();
+    // long-press: tree under finger = leap there, else Jalak power dispatch
+    touchHoldTimer = setTimeout(() => {
+      touchHoldTimer = 0;
+      if (touchAimId === null) return;
+      const pi = perchFromClient(touchHoldX, touchHoldY);
+      if (pi >= 0 && pi !== G.perch) {
+        leapTo(pi);
+        touchHoldFired = true;
+        touchAimId = null;
+        return;
+      }
+      const pt = groundFromClient(touchHoldX, touchHoldY);
+      if (pt && G.holding && useHeldPowerAt(pt)) {
+        touchHoldFired = true;
+        touchAimId = null;
+      }
+    }, 550);
     setAimFromClient(e.clientX, e.clientY);
     return;
   }
-  const pi = perchFromClient(e.clientX, e.clientY);
-  if (pi >= 0 && pi !== G.perch) { leapTo(pi); return; }
+  // right-click: leap to a tree, else unleash the held Jalak seed.
+  // (Left-click never leaps — even on a tree it just aims + shoots.)
+  if (e.button === 2) {
+    const pi = perchFromClient(e.clientX, e.clientY);
+    if (pi >= 0 && pi !== G.perch) { leapTo(pi); return; }
+    const pt = groundFromClient(e.clientX, e.clientY);
+    if (pt) useHeldPowerAt(pt);
+    return;
+  }
+  const pk = pickupFromClient(e.clientX, e.clientY);
+  if (pk) { fetchPickup(pk); return; }
   setAimFromClient(e.clientX, e.clientY);
   shoot();
 });
 addEventListener('pointerup', e => {
   if (e.pointerId !== touchAimId) return;
   touchAimId = null;
+  clearTouchHold();
+  // a fired long-press already spent the gesture: never misfire a shot after
+  if (touchHoldFired) { touchHoldFired = false; return; }
   if (e.target.closest('button') || e.target.closest('.card') || e.target.closest('.shooter-box')) return;
-  const pi = perchFromClient(e.clientX, e.clientY);
-  if (pi >= 0 && pi !== G.perch) { leapTo(pi); return; }
+  // tap (even on a tree) is just aim + shoot — leaping needs a hold
   setAimFromClient(e.clientX, e.clientY);
   shoot();
 });
-addEventListener('pointercancel', e => { if (e.pointerId === touchAimId) touchAimId = null; });
+addEventListener('pointercancel', e => { if (e.pointerId === touchAimId) { touchAimId = null; touchHoldFired = false; } clearTouchHold(); });
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('keydown', e => {
   if (e.code === 'Space') {
@@ -1829,10 +2241,10 @@ $('pause-btn').onclick = () => togglePause();
 $('swap-btn').onclick = () => { audio(); doSwap(); };
 $('shooter-box').onclick = () => { audio(); doSwap(); };
 $('mute-btn').onclick = () => { audio(); toggleMute(); sfx('click'); };
-// Touch devices get a gesture-appropriate hint (drag/release/swap button).
+// Touch devices get a gesture-appropriate hint (drag/release/hold/swap button).
 try {
   if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) {
-    $('hint').innerHTML = 'Drag to aim • Release to shoot • Tap a tree to leap • <b>⇄</b> to swap';
+    $('hint').innerHTML = 'Drag to aim • Release to shoot • Tap a treasure, Jalak fetches it • Hold a marble to unleash • Hold a tree to leap';
   }
 } catch { /* ignore */ }
 addEventListener('resize', () => {
@@ -1850,13 +2262,32 @@ try { $('best-line').textContent = 'best: ' + G.best; } catch { /* ignore */ }
    rendering to play whole games in seconds. */
 const ATTRACT_SKILL = { interval: 0.5, noise: 0.02, snipe: 0.8, swap: true };
 function botThink(skill = ATTRACT_SKILL) {
-  if (G.status !== 'playing' || G.paused || !G.balls.length) return;
+  if (G.status !== 'playing' || G.paused) return;
   const b = G.balls;
-  let target = null;
-  // 1) snipe urgent power seeds (any color triggers)
-  for (const x of b) {
-    if (x.power && x.s / curveLen > 0.12 && Math.random() < (skill.snipe ?? 0.7)) { target = x; break; }
+  // 0) companion errands: the bot plays the Jalak too — fetch ripe seeds,
+  //    spend held powers through the same right-click dispatch as a human,
+  //    and hunt eagles: carriers FIRST (their loot blocks completion),
+  //    then harass loiterers. Eagle duty runs even on an empty chain —
+  //    stolen balls only come back via a kill.
+  if (G.jalakMode === 'hover' && !G.holding && G.pickups.length) fetchPickup(G.pickups[0]);
+  if (b.length) {
+    if (G.holding === 'bomb') useHeldPowerAt(b[0].mesh.position);
+    else if (G.holding === 'stop' && (G.danger || (b[0].s / curveLen > 0.5))) useHeldPowerAt(b[0].mesh.position);
+    else if (G.holding === 'frenzy' && b.length > 10) useHeldPowerAt(b[(b.length / 2) | 0].mesh.position);
   }
+  const hittable = eagles.filter(e => e.group.visible && (e.mode === 'circle' || e.mode === 'stoop' || e.mode === 'climb'));
+  const carriers = hittable.filter(e => e.stealBall);
+  const prey = carriers.length ? carriers[(Math.random() * carriers.length) | 0]
+    : (hittable.length && Math.random() < 0.45) ? hittable[(Math.random() * hittable.length) | 0] : null;
+  if (prey) {
+    G.aim = Math.atan2(prey.group.position.x - tarsius.position.x, prey.group.position.z - tarsius.position.z);
+    tarsius.rotation.y = G.aim;
+    G.shootCD = 0;
+    shoot();
+    return;
+  }
+  if (!b.length) return;
+  let target = null;
   // 2) held color, closest to the skull
   if (!target) {
     let bestS = -1;
@@ -1877,10 +2308,10 @@ function botThink(skill = ATTRACT_SKILL) {
     }
   }
   // 3) lead the moving chain + human aim wobble
-  const spd = baseSpeed() * (G.slowT > 0 ? 0.45 : 1) * (G.revT > 0 ? -0.85 : 1);
+  const spd = G.holdT > 0 ? 0 : baseSpeed();
   const tp = target.mesh.position;
   const dist = Math.hypot(tp.x - tarsius.position.x, tp.z - tarsius.position.z);
-  const p = pointAt(target.s + THREE.MathUtils.clamp(spd * (dist / 26), -3, 6));
+  const p = pointAt(target.s + THREE.MathUtils.clamp(spd * (dist / LEVEL.mechanics.projectileSpeed), -3, 6));
   const wobble = (Math.random() + Math.random() - 1) * (skill.noise ?? 0.025);
   G.aim = Math.atan2(p.x - tarsius.position.x, p.z - tarsius.position.z) + wobble;
   tarsius.rotation.y = G.aim;
@@ -1892,12 +2323,27 @@ function simCleanupToMenu() {
   G.projectiles.forEach(x => { scene.remove(x.mesh); x.trail.forEach(t => scene.remove(t)); });
   G.particles.forEach(x => scene.remove(x.m));
   G.rings.forEach(x => scene.remove(x.m));
+  G.pickups.slice().forEach(removePickup);
+  if (bombFall) { scene.remove(bombFall.mesh); bombFall = null; }
   Object.assign(G, {
     status: 'menu', paused: false, balls: [], projectiles: [], particles: [], rings: [],
     spawned: 0, destroyed: 0, score: 0, combo: 1, maxCombo: 1, streak: 0,
     shots: 0, hits: 0, powersUsed: 0, playTime: 0, slowT: 0, revT: 0,
     danger: false, heartT: 0, shootCD: 0, sim: false,
+    holdT: 0, rewindT: 0, pickups: [], pickupT: 8, frenzyQ: [], frenzyT: 0,
+    jalakMode: 'hover', jalakT: 0, jalakFrom: null, jalakTo: null, jalakPayload: null,
+    holding: null, swapT: 0,
+    eagleSpawnT: 14, eagleSteals: 0,
+    eagleHits: 0,
+    ultimates: 0,
   });
+  tarsius.visible = true;
+  jalakHome(jalak.group.position);
+  jalak.group.scale.setScalar(1);
+  nextOrb.visible = true; // hold-tuck never survives a reset
+  setHeldSprite();
+  clearEagles();
+  spawnEagle();
   $('end-overlay').classList.add('hidden');
   $('overlay').classList.remove('hidden');
   updateHUD();
@@ -1923,8 +2369,8 @@ function simGame(skill, diff = 'normal', maxMin = 12) {
   const res = {
     win: G.status === 'won', diff, score: G.score, des: G.destroyed,
     time: Math.round(G.playTime), shots: G.shots,
-    acc: G.shots ? Math.round((G.hits / G.shots) * 100) : 100,
     maxCombo: G.maxCombo, bestStreak: G.bestStreak, powers: G.powersUsed,
+    eagle: G.eagleHits || 0, ult: G.ultimates || 0, steals: G.eagleSteals || 0,
     timeout: t >= cap,
   };
   G.muted = wasMuted;
@@ -1936,7 +2382,7 @@ function simGames(n, skill, diff = 'normal') {
   for (let i = 0; i < n; i++) {
     const r = simGame(skill, diff);
     out.push(r);
-    console.log(`[sim] ${diff} game ${i + 1}/${n}: ${r.win ? 'WIN' : 'LOSE'} score=${r.score} des=${r.des} time=${r.time}s acc=${r.acc}%`);
+    console.log(`[sim] ${diff} game ${i + 1}/${n}: ${r.win ? 'WIN' : 'LOSE'} score=${r.score} des=${r.des} time=${r.time}s seeds=${r.powers} eagle=${r.eagle}`);
   }
   return out;
 }
@@ -2080,9 +2526,46 @@ function tick() {
   curOrb.position.y = 0.55 + cb * 0.12;
   curOrb.scale.set(1 - cb * 0.04, 1 + cb * 0.06, 1 - cb * 0.04);
   const nb = Math.sin(G.time * 2 + 1);
-  nextOrb.position.set(tarsius.position.x + 1.9, 4.4 + nb * 0.12, tarsius.position.z + 1.0);
-  nextOrb.scale.setScalar(0.65 * (1 + nb * 0.05));
+  // NEXT marble dangles from the Jalak's talons (local space now) —
+  // tucked away while HOLDING: the 2.6× giant would otherwise park a huge
+  // marble on the chain head, confusing it with path balls (NEXT stays
+  // readable in the HUD shooter-box meanwhile).
+  nextOrb.visible = G.jalakMode !== 'hold';
+  nextOrb.position.set(0, -0.35 + nb * 0.05, 0);
+  nextOrb.scale.setScalar(0.62 * (1 + nb * 0.05));
   curOrb.rotation.y += dt; nextOrb.rotation.y -= dt * 1.4;
+  /* --- Jalak life: hover-bob, swap-toss dip, frantic wingbeats on errands --- */
+  {
+    const J = jalak.group;
+    const busy = G.jalakMode !== 'hover' && G.jalakMode !== 'hold';
+    const dip = G.swapT > 0 ? Math.sin((G.swapT / 0.32) * Math.PI) * 0.7 : 0;
+    J.position.y += Math.sin(G.time * 4.2) * 0.008 - dip * dt * 8;
+    const flap = Math.sin(G.time * (busy ? 34 : 14)) * (busy ? 0.9 : 0.45);
+    jalak.refs.wingL.rotation.z = 0.25 + flap;
+    jalak.refs.wingR.rotation.z = -0.25 - flap;
+    J.rotation.y = tarsius.rotation.y * 0.6;
+  }
+  /* --- Elang Jawa life: soar, stoop and shadow (whole flock) --- */
+  for (const e of eagles) {
+    const E = e.group;
+    if (E.visible) {
+      const diving = e.mode === 'stoop' || e.mode === 'climb' || e.mode === 'flee';
+      const flap = diving ? Math.sin(G.time * 20 + e.t) * 0.7 : Math.sin(G.time * 3.5 + e.t) * 0.18;
+      e.refs.wingL.rotation.z = 0.12 + flap;
+      e.refs.wingR.rotation.z = -0.12 - flap;
+      e.shadow.position.set(E.position.x, 0.665, E.position.z);
+      const shScale = THREE.MathUtils.clamp(2.3 - E.position.y * 0.09, 0.8, 2.1);
+      e.shadow.scale.set(shScale, shScale, 1);
+      if (e.stealBall) e.stealBall.mesh.rotation.y += dt * 3;
+    }
+  }
+  // bloomed treasure chests bob + spin + creak until fetched or wilted
+  for (const p of G.pickups) {
+    p.chest.position.y = 1.0 + Math.sin(G.time * 3 + p.x) * 0.15;
+    p.chest.rotation.y += dt * 2;
+    p.chestRefs.lid.rotation.x = TREASURE_LID_OPEN + Math.sin(G.time * 3 + p.x) * 0.08;
+    p.halo.rotation.z += dt * 1.2;
+  }
   // perch rings: the active tree glows green, the rest glow faint sand
   for (let i = 0; i < perchRings.length; i++) {
     const active = i === G.perch;
@@ -2116,6 +2599,200 @@ function tick() {
   if (composer) composer.render(); else renderer.render(scene, camera);
 }
 
+/* ---------- Jalak + Elang Jawa brains (game-time: sim-safe) ---------- */
+function moveEagleToward(e, target, speed, dt) {
+  const grp = e.group;
+  const d = target.clone().sub(grp.position);
+  const dist = d.length();
+  if (dist > 0.001) {
+    grp.position.addScaledVector(d.normalize(), Math.min(dist, speed * dt));
+    const yaw = Math.atan2(d.x, d.z);
+    let dy = yaw - grp.rotation.y;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    grp.rotation.y += dy * Math.min(1, dt * 4);
+    grp.rotation.z = THREE.MathUtils.clamp(-dy * 1.5, -0.5, 0.5);
+  }
+  grp.position.y += Math.sin(G.time * 3.1 + e.t) * dt * 0.8;
+}
+function stepPickups(dt) {
+  for (let i = G.pickups.length - 1; i >= 0; i--) {
+    const p = G.pickups[i];
+    p.age += dt;
+    if (p.age > (LEVEL.pickupExpiry ?? 30)) removePickup(p);
+  }
+  G.pickupT -= dt;
+  if (G.pickupT <= 0) {
+    G.pickupT = (LEVEL.pickupInterval ?? 16) * (0.8 + Math.random() * 0.5);
+    if (G.pickups.length < (LEVEL.pickupMax ?? 3)) {
+      const p = spawnPickup();
+      if (p && !G.sim) floater(POWERS[p.type].name + ' bloomed!', new THREE.Vector3(p.x, 2.5, p.z));
+    }
+  }
+}
+const _jv = new THREE.Vector3();
+function stepJalak(dt) {
+  if (G.swapT > 0) G.swapT -= dt;
+  const J = jalak.group;
+  const smooth = t => t * t * (3 - 2 * t);
+  // falling bomb from a drop run
+  if (bombFall) {
+    bombFall.t -= dt;
+    bombFall.mesh.position.y -= dt * 14;
+    if (bombFall.t <= 0) {
+      const at = bombFall.target;
+      scene.remove(bombFall.mesh); bombFall = null;
+      triggerPower('bomb', at);
+    }
+  }
+  if (G.jalakMode === 'hover') {
+    J.position.lerp(jalakHome(_jv), Math.min(1, dt * 3));
+    const s = J.scale.x + (1 - J.scale.x) * Math.min(1, dt * 4);
+    J.scale.setScalar(s);
+  } else if (G.jalakMode === 'fetch' || G.jalakMode === 'return' || G.jalakMode === 'bomb') {
+    G.jalakT -= dt;
+    const t = THREE.MathUtils.clamp(1 - G.jalakT / 0.55, 0, 1);
+    J.position.lerpVectors(G.jalakFrom, G.jalakTo, smooth(t));
+    J.position.y += Math.sin(t * Math.PI) * 2.2;
+    if (G.jalakT <= 0) {
+      if (G.jalakMode === 'fetch') {
+        const p = G.jalakPayload;
+        if (p && G.pickups.indexOf(p) >= 0) {
+          G.holding = p.type;
+          removePickup(p);
+          setHeldSprite(); updateHUD();
+          sfx('grab');
+          if (!G.sim) floater('+' + POWERS[p.type].name, J.position.clone(), true);
+        } else if (!G.sim) floater('gone…', J.position.clone());
+        G.jalakPayload = null;
+        G.jalakMode = 'return';
+        G.jalakFrom = J.position.clone();
+        G.jalakTo = jalakHome();
+        G.jalakT = 0.55;
+      } else if (G.jalakMode === 'bomb') {
+        const at = G.jalakPayload ? G.jalakPayload.clone() : J.position.clone();
+        const bm = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12),
+          new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2b2d42, emissive: 0xff9e00, emissiveIntensity: 1.2, roughness: 0.25, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+        bm.position.copy(J.position);
+        scene.add(bm);
+        bombFall = { mesh: bm, t: 0.3, target: new THREE.Vector3(at.x, 1.15, at.z) };
+        G.jalakPayload = null;
+        G.jalakMode = 'return';
+        G.jalakFrom = J.position.clone();
+        G.jalakTo = jalakHome();
+        G.jalakT = 0.55;
+      } else {
+        G.jalakMode = 'hover';
+      }
+    }
+  } else if (G.jalakMode === 'hold') {
+    if (G.holdT <= 0 || !G.balls.length) { G.jalakMode = 'hover'; }
+    else {
+      const s = J.scale.x + (2.6 - J.scale.x) * Math.min(1, dt * 4);
+      J.scale.setScalar(s);
+      const head = G.balls[0].mesh.position;
+      _jv.set(head.x, head.y + 2.4, head.z + 0.8);
+      J.position.lerp(_jv, Math.min(1, dt * 5));
+    }
+  } else if (G.jalakMode === 'frenzy') {
+    if (!G.frenzyQ.length) {
+      updateHUD(); checkWin();
+      G.jalakMode = 'return';
+      G.jalakFrom = J.position.clone();
+      G.jalakTo = jalakHome();
+      G.jalakT = 0.5;
+    } else {
+      const prey = G.frenzyQ[0];
+      if (G.balls.indexOf(prey) < 0) { G.frenzyQ.shift(); }
+      else {
+        _jv.copy(prey.mesh.position); _jv.y += 0.9;
+        J.position.lerp(_jv, Math.min(1, dt * 10));
+        G.frenzyT -= dt;
+        if (G.frenzyT <= 0 && J.position.distanceTo(prey.mesh.position) < 1.6) {
+          G.frenzyQ.shift();
+          destroyBall(prey, 15);
+          sfx('pop');
+          G.frenzyT = 0.16;
+          updateHUD();
+        }
+      }
+    }
+  }
+}
+function stepEagle(dt) {
+  const m = LEVEL.mechanics;
+  // reinforcements: fresh birds join until the flock hits the difficulty cap
+  if (G.status === 'playing' && !G.paused) {
+    G.eagleSpawnT -= dt;
+    if (G.eagleSpawnT <= 0) {
+      G.eagleSpawnT = (m.eagleSpawnEvery ?? 20) * (0.8 + Math.random() * 0.4);
+      if (eagles.length < eagleCap()) spawnEagle();
+    }
+  }
+  for (const e of eagles) {
+    const E = e.group;
+    if (e.mode === 'gone') {
+      if (G.status === 'playing' && !G.paused) {
+        e.goneT -= dt;
+        if (e.goneT <= 0) {
+          const a = Math.random() * Math.PI * 2;
+          E.position.set(Math.cos(a) * 24, 14, Math.sin(a) * 24);
+          E.visible = true; e.shadow.visible = true;
+          e.mode = 'circle';
+          e.stoopT = (m.eagleStoopEvery ?? 18) * (0.8 + Math.random() * 0.4);
+          pickEagleWP(e, 9);
+        }
+      }
+      continue;
+    }
+    if ((G.status !== 'playing' && G.status !== 'intro') || G.paused) continue;
+    if (e.mode === 'circle') {
+      moveEagleToward(e, e.wp, (5 + Math.sin(G.time * 0.7 + e.t) * 2) * (e.stealBall ? 0.85 : 1), dt);
+      if (E.position.distanceTo(e.wp) < 1.5 || Math.random() < dt * 0.4) pickEagleWP(e);
+      // carriers keep circling with their prize; only empty claws stoop again
+      if (G.status === 'playing' && !e.stealBall) {
+        e.stoopT -= dt;
+        if (e.stoopT <= 0) {
+          e.stoopT = (m.eagleStoopEvery ?? 18) * (0.6 + Math.random() * 0.8);
+          eagleStoop(e);
+        }
+      }
+    } else if (e.mode === 'stoop') {
+      moveEagleToward(e, e.wp, 17, dt);
+      if (E.position.distanceTo(e.wp) < 1.3) {
+        // grab the marked marble (or any survivor if the chain shifted)
+        let prey = (e.stealRef && G.balls.includes(e.stealRef)) ? e.stealRef
+          : G.balls.length ? G.balls[(Math.random() * G.balls.length) | 0] : null;
+        e.stealRef = null;
+        if (prey) {
+          const bi = G.balls.indexOf(prey);
+          if (bi >= 0) G.balls.splice(bi, 1);
+          scene.remove(prey.mesh);
+          e.group.add(prey.mesh);
+          prey.mesh.position.set(0, -1.0, 0.3);
+          prey.mesh.rotation.set(0, 0, 0);
+          e.stealBall = { color: prey.color, mesh: prey.mesh };
+          G.eagleSteals = (G.eagleSteals || 0) + 1;
+          floater('BALL STOLEN!', new THREE.Vector3(e.wp.x, 3, e.wp.z), true);
+          sfx('warn');
+          sanitizeHeld();
+          updateHUD(); checkWin();
+        }
+        e.mode = 'climb';
+        pickEagleWP(e, 11);
+      }
+    } else if (e.mode === 'climb') {
+      moveEagleToward(e, e.wp, 12, dt);
+      if (E.position.distanceTo(e.wp) < 1.5) e.mode = 'circle';
+    } else if (e.mode === 'flee') {
+      e.t += dt;
+      E.position.addScaledVector(e.fleeDir, 22 * dt);
+      E.position.y += 6 * dt;
+      if (e.t > 1.1) { E.visible = false; e.shadow.visible = false; e.mode = 'gone'; }
+    }
+  }
+}
+
 /* Pure game logic, shared by the live loop and the fast headless simulator:
    chain, spawner, projectiles, powers, particles. No rendering, no DOM in sim. */
 function step(dt, rawDt) {
@@ -2125,33 +2802,38 @@ function step(dt, rawDt) {
       if (G.introT <= 0) { G.status = 'playing'; showBanner('GO!', 'match 3 or more!'); }
     } else {
       G.playTime += dt;
-      if (G.slowT > 0) G.slowT -= dt;
-      if (G.revT > 0) G.revT -= dt;
-      const reversing = G.revT > 0;
+      if (G.holdT > 0) {
+        G.holdT -= dt;
+        if (G.holdT <= 0) { G.holdT = 0; if (G.jalakMode === 'hold') G.jalakMode = 'hover'; }
+      }
+      if (G.rewindT > 0) G.rewindT = Math.max(0, G.rewindT - dt);
       const m = LEVEL.mechanics;
-      const spd = baseSpeed() * (G.slowT > 0 ? m.slowFactor : 1) * (reversing ? m.reverseFactor : 1)
-        * (G.danger && !reversing ? m.finalStandBrake : 1); // skull toys with its food: final-stand brake
+      const frozen = G.holdT > 0; // Jalak holds the head: the march stops cold
+      const reversing = G.rewindT > 0; // ULTIMATE rewind: slow backward drift
+      const rewindSpeed = (m.ultimateRollback ?? 14) / (m.ultimateRewindDur ?? 2.2);
+      const spd = frozen ? 0 : reversing ? -rewindSpeed : baseSpeed()
+        * (G.danger ? m.finalStandBrake : 1); // skull toys with its food: final-stand brake
 
-      // spawner (every Nth marble carries a power seed from this level's mix)
-      if (G.spawned < TOTAL_BALLS) {
+      // spawner: plain marbles only — power seeds bloom on the grass now
+      if (!frozen && G.spawned < TOTAL_BALLS) {
         spawnAcc += dt;
         const tail = G.balls[G.balls.length - 1];
         const gapOk = !tail || tail.s > SPACING * 1.1;
         if (spawnAcc > (SPACING / Math.max(0.4, baseSpeed())) * 1.35 && gapOk) {
           spawnAcc = 0;
-          const pw = (G.spawned % LEVEL.spawnPowerEvery === LEVEL.spawnPowerEvery - 1) ? randPower() : null;
-          spawnBall(0, randColor(), pw);
+          spawnBall(0, randColor(), null);
           G.spawned++;
-          if (pw && POWERS[pw]) floater(POWERS[pw].name + '!', G.balls[G.balls.length - 1].mesh.position);
           updateHUD();
         }
       }
-      // chain movement
+      // chain movement (frozen solid while the Jalak holds the head)
+      if (!frozen) {
       const b = G.balls;
       if (b.length) {
         const joins = [];
         const joinGap = SPACING * m.joinGap;
         b[0].s += spd * dt;
+        if (b[0].s < 0) b[0].s = 0; // rewind never pushes past the portal
         for (let i = 1; i < b.length; i++) {
           const dist = b[i - 1].s - b[i].s;
           if (reversing) {
@@ -2203,9 +2885,11 @@ function step(dt, rawDt) {
           updateHUD();
         }
       }
+      }
       // projectiles
       for (let i = G.projectiles.length - 1; i >= 0; i--) {
         const pr = G.projectiles[i];
+        const prevX = pr.pos.x, prevZ = pr.pos.z;
         pr.pos.addScaledVector(pr.vel, dt);
         pr.mesh.position.set(pr.pos.x, 1.15, pr.pos.z);
         pr.core.rotation.y += dt * 9;
@@ -2217,6 +2901,25 @@ function step(dt, rawDt) {
           else t.visible = false;
         });
         let dead = Math.abs(pr.pos.x) > 20 || Math.abs(pr.pos.z) > 20;
+        let handled = false; // hit branches splice immediately; only bare
+        // out-of-bounds deaths fall through to the miss handler below
+        // the Elang Jawa flock raids the island: clip one mid-flight (+50).
+        // Swept XZ segment (no tunneling past the fast stoop) + a
+        // screen-space fallback so aiming AT the bird connects.
+        // Carriers drop their stolen marble smashed (+15) — required to finish.
+        if (!dead) {
+          for (const e of eagles) {
+            if (!e.group.visible || (e.mode !== 'circle' && e.mode !== 'stoop' && e.mode !== 'climb')) continue;
+            const ex = e.group.position.x, ez = e.group.position.z;
+            if (segHitsEagle(prevX, prevZ, pr.pos.x, pr.pos.z, ex, ez, EAGLE_HIT_R) || screenHitsPos(pr, e.group.position)) {
+              scene.remove(pr.mesh); pr.trail.forEach(t => scene.remove(t));
+              G.projectiles.splice(i, 1);
+              eagleDown(e);
+              dead = true; handled = true;
+              break;
+            }
+          }
+        }
         if (!dead) {
           // nearest-ball wins (fairer hits when crossing a moving chain)
           let bestJ = -1, bestD = Infinity;
@@ -2231,16 +2934,20 @@ function step(dt, rawDt) {
             scene.remove(pr.mesh); pr.trail.forEach(t => scene.remove(t));
             G.projectiles.splice(i, 1);
             insertShot(pr, j);
-            dead = true;
+            dead = true; handled = true;
           }
         }
-        if (dead && G.projectiles[i] === pr) { /* hit: already spliced */ }
+        if (handled) { /* hit: already spliced, streak/combo kept */ }
         else if (dead) {
           scene.remove(pr.mesh); pr.trail.forEach(t => scene.remove(t));
           G.projectiles.splice(i, 1);
           onMiss();
         }
       }
+      // companions + pickups (game-time, so sim + attract stay consistent)
+      stepPickups(dt);
+      stepJalak(dt);
+      stepEagle(dt);
     }
     // particles + rings always animate (even intro)
     for (let i = G.particles.length - 1; i >= 0; i--) {
@@ -2281,6 +2988,13 @@ window.__game = {
     G.shootCD = 0; shoot();
   },
   leapTo, PERCHES,
+  jalak: jalak.group, nextOrb,
+  get eagle() { return eagles.length ? eagles[0].group : null; },
+  eagles, eaglesHolding, eagleCap, spawnEagle, clearEagles,
+  pickups: () => G.pickups.map(p => p.type),
+  holding: () => G.holding,
+  spawnPickup, fetchPickup, dropBombAt, fireHold, fireFrenzy, useHeldPowerAt, eagleDown, eagleStoop,
+  segHitsEagle, screenHitsEagle, screenHitsPos, EAGLE_HIT_R,
   ballCount: () => G.balls.length,
   score: () => G.score,
   status: () => G.paused ? 'paused' : G.status,
@@ -2290,11 +3004,11 @@ try {
   // Menu seed legend mirrors this island's power mix (same icons, per-level set).
   const legend = document.querySelector('.seeds-legend');
   const story = document.querySelector('#overlay .story');
-  if (story) story.innerHTML = `A tiny <b>tarsius</b> guards a toy-box <b>${LEVEL.name}</b>.<br/>Marble spirits roll toward the <b>Skull Cave</b> —<br/>blast them with seed-shots. Match <b>3+</b> to pop!`;  if (legend) {
+  if (story) story.innerHTML = `A tiny <b>tarsius</b> guards a toy-box <b>${LEVEL.name}</b>.<br/>Marble spirits roll toward the <b>Skull Cave</b> — and <b>elang</b> steal them away…<br/>shoot the thieves down! Match <b>3+</b> to pop!`;  if (legend) {
     legend.innerHTML = LEVEL.powersAvailable.map(t => {
       const d = POWERS[t]; if (!d) return '';
-      const blurb = t === 'bomb' ? 'blasts nearby marbles' : t === 'slow' ? 'slows the march' : t === 'rev' ? 'rolls time back' : 'bonus + breathing room';
-      return `<div><span class="seed ${t === 'star' ? 'bomb' : t}">${d.letter}</span><b>${d.name[0] + d.name.slice(1).toLowerCase()}</b><i>${blurb}</i></div>`;
+      const blurb = 'right-click / hold any marble';
+      return `<div><span class="seed ${t}">${d.letter}</span><b>${d.name[0] + d.name.slice(1).toLowerCase()}</b><i>${blurb}</i></div>`;
     }).join('');
   }
 } catch { /* ignore */ }

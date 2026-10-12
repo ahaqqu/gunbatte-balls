@@ -50,9 +50,10 @@ export const koholint = {
     starR2: 25,
     pathD: 1.9,
   },
-  powersAvailable: ['bomb', 'slow', 'rev'],
-  spawnPowerEvery: 7,
-  initialBombIndex: 5,
+  powersAvailable: ['bomb', 'stop', 'frenzy'],
+  pickupInterval: 16,
+  pickupMax: 3,
+  pickupExpiry: 30,
   initialBalls: 10,
   initialHeadS: 14,
   mechanics: {
@@ -68,8 +69,17 @@ export const koholint = {
     projectileSpeed: 26,
     bombRadius: 5.5,
     bombMax: 12,
-    slowDur: 8,
-    revDur: 6,
+    holdDur: 6,          // HOLDSEED freeze (Jalak holds the head)
+    frenzyMin: 4,        // FRENZYSEED random plucks per trigger
+    frenzyMax: 8,
+    eagleStoopEvery: 18, // Elang Jawa mischief cadence (s, ±40%)
+    eagleGoneDur: 22,    // how long a shot eagle stays away (s, ±20%)
+    eagleSpawnEvery: 20, // fresh eagle joins the flock (s, ±20%)
+    eagleMaxChill: 3,    // max concurrent eagles by difficulty
+    eagleMax: 5,         // normal
+    eagleMaxSpicy: 10,   // spicy sky full of thieves
+    ultimateRollback: 14, // ULTIMATE REWIND: chain drifts back this far (s units)…
+    ultimateRewindDur: 2.2, // …over this many seconds (slow backward march)
   },
   scatter: { trees: 32, rocks: 20, flowers: 54, grass: 120 },
   fence: [[0.10, 0.30, 1], [0.36, 0.52, -1], [0.62, 0.80, 1]],
@@ -104,12 +114,17 @@ export const sunsetCove = {
     starR2: 25,
     pathD: 1.9,
   },
-  powersAvailable: ['bomb', 'slow', 'star'],
+  powersAvailable: ['bomb', 'stop', 'frenzy'],
   mechanics: {
     ...koholint.mechanics,
     rollback: 2.0,
     magnetSpeed: 6.5,
     dangerThreshold: 0.68,
+    holdDur: 5,
+    frenzyMin: 5,
+    frenzyMax: 9,
+    pickupInterval: 14,
+    eagleStoopEvery: 15,
   },
 };
 

@@ -27,7 +27,7 @@ async function run(label, skill, diff) {
   const res = await page.evaluate(([n, s, d]) => window.__game.simGames(n, s, d), [N, skill, diff]);
   const wins = res.filter(r => r.win).length;
   const avg = k => Math.round(res.reduce((a, r) => a + r[k], 0) / res.length);
-  console.log(`${label} [${diff}]: ${wins}/${res.length} wins | avg score ${avg('score')} | avg time ${avg('time')}s | avg acc ${avg('acc')}%`);
+  console.log(`${label} [${diff}]: ${wins}/${res.length} wins | avg score ${avg('score')} | avg time ${avg('time')}s | avg seeds ${avg('powers')} | eagle downs ${res.reduce((a, r) => a + (r.eagle || 0), 0)} | ults ${res.reduce((a, r) => a + (r.ult || 0), 0)} | stolen ${res.reduce((a, r) => a + (r.steals || 0), 0)}`);
   return { label, diff, wins, n: res.length };
 }
 await run('PATIENT', patient, 'chill');

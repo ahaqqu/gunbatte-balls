@@ -296,3 +296,177 @@ export function makeOrb(kit, colorIdx) {
   m.castShadow = true;
   return m;
 }
+
+/* ============================================================
+   COMPANION + ENEMY builders (same toy language as the tarsier:
+   glossy MeshPhysicalMaterial, flat-shaded chunks, cast shadows).
+   Both are pure builders — placement/animation lives in game.js,
+   so any level reuses them unchanged.
+   ============================================================ */
+
+/* Jalak (Bali starling): crisp white gloss body, black wing/tail tips,
+   emissive neon-blue eye patches, spiky crest. Returns { group, refs }
+   where refs = { wingL, wingR, bodyMat, patchMat, talon } — talon is an
+   Object3D anchor under the belly for the carried NEXT marble. */
+export function buildJalak() {
+  const group = new THREE.Group();
+  const white = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xfdfdf8, roughness: 0.15, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.08 });
+  const black = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x23232e, roughness: 0.25, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.12 });
+  const patchMat = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x33ddff, emissive: 0x22ccff, emissiveIntensity: 1.2, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  const beakM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x4a4a55, roughness: 0.3, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.15 });
+  const legM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xff9e3c, roughness: 0.35, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.2 });
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.34, 20, 14), white);
+  body.scale.set(1, 0.95, 1.25); body.castShadow = true;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 18, 12), white);
+  head.position.set(0, 0.3, 0.3); head.castShadow = true;
+  group.add(head);
+  // spiky crest sweeping back
+  for (let i = 0; i < 3; i++) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.3 - i * 0.05, 8), white);
+    spike.position.set(0, 0.48 + i * 0.02, 0.12 - i * 0.1);
+    spike.rotation.x = -0.9 - i * 0.25; spike.castShadow = true;
+    group.add(spike);
+  }
+  // neon-blue eye patches (emissive so they glow in shade)
+  [-1, 1].forEach(s => {
+    const patch = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 10), patchMat);
+    patch.position.set(s * 0.16, 0.33, 0.42); patch.scale.set(1, 0.8, 0.5);
+    group.add(patch);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), black);
+    eye.position.set(s * 0.16, 0.34, 0.48);
+    group.add(eye);
+  });
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.22, 10), beakM);
+  beak.position.set(0, 0.28, 0.58); beak.rotation.x = Math.PI / 2;
+  group.add(beak);
+  // wings: white with black tips
+  const mkWing = s => {
+    const w = new THREE.Group();
+    const inner = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 10), white);
+    inner.scale.set(1.4, 0.28, 0.7); inner.castShadow = true;
+    w.add(inner);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 10), black);
+    tip.position.set(s * 0.42, 0, 0); tip.scale.set(1.1, 0.28, 0.6); tip.castShadow = true;
+    w.add(tip);
+    w.position.set(s * 0.3, 0.12, 0);
+    group.add(w);
+    return w;
+  };
+  const wingL = mkWing(-1), wingR = mkWing(1);
+  // tail fan with black tip
+  const tail = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), white);
+  tail.position.set(0, 0.05, -0.5); tail.scale.set(0.9, 0.25, 1.3);
+  group.add(tail);
+  const tailTip = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), black);
+  tailTip.position.set(0, 0.05, -0.72); tailTip.scale.set(0.9, 0.25, 0.7);
+  group.add(tailTip);
+  // dangling orange legs + talon anchor for the carried marble
+  [-1, 1].forEach(s => {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.3, 8), legM);
+    leg.position.set(s * 0.12, -0.4, 0.05);
+    group.add(leg);
+  });
+  const talon = new THREE.Object3D();
+  talon.position.set(0, -0.62, 0.05);
+  group.add(talon);
+  return { group, refs: { wingL, wingR, bodyMat: white, patchMat, talon } };
+}
+
+/* Elang Jawa (Javan hawk-eagle): dark chocolate glider with broad
+   plank wings, fan tail, crest and hooked beak. Returns { group, refs }
+   with refs = { wingL, wingR } for flap/glide animation. */
+export function buildEagle() {
+  const group = new THREE.Group();
+  const brown = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x5a3a22, roughness: 0.3, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+  const dark = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2e1d10, roughness: 0.35, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+  const beakM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffc700, roughness: 0.3, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+  const eyeM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xffd166, emissive: 0xffb700, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 12), brown);
+  body.scale.set(1, 0.9, 1.6); body.castShadow = true;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 16, 12), brown);
+  head.position.set(0, 0.35, 0.65); head.castShadow = true;
+  group.add(head);
+  // upright crest feathers
+  for (let i = 0; i < 3; i++) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.42 - i * 0.07, 8), dark);
+    spike.position.set((i - 1) * 0.12, 0.68, 0.5 - Math.abs(i - 1) * 0.06);
+    spike.rotation.x = -0.35; spike.castShadow = true;
+    group.add(spike);
+  }
+  // hooked beak
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 10), beakM);
+  beak.position.set(0, 0.3, 1.0); beak.rotation.x = Math.PI / 2 + 0.35;
+  group.add(beak);
+  [-1, 1].forEach(s => {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), eyeM);
+    eye.position.set(s * 0.2, 0.42, 0.82);
+    group.add(eye);
+  });
+  // broad plank wings for the unpredictable soar
+  const mkWing = s => {
+    const w = new THREE.Group();
+    const plank = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 10), brown);
+    plank.scale.set(2.0, 0.18, 0.9); plank.castShadow = true;
+    w.add(plank);
+    for (let f = 0; f < 3; f++) {
+      const feather = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), dark);
+      feather.position.set(s * (1.05 + f * 0.22), 0, 0.15 - f * 0.18);
+      feather.scale.set(1.2, 0.18, 0.7);
+      w.add(feather);
+    }
+    w.position.set(s * 0.5, 0.2, 0);
+    group.add(w);
+    return w;
+  };
+  const wingL = mkWing(-1), wingR = mkWing(1);
+  const tail = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 10), dark);
+  tail.position.set(0, 0.05, -1.0); tail.scale.set(1.1, 0.18, 1.2);
+  group.add(tail);
+  return { group, refs: { wingL, wingR } };
+}
+
+/* Treasure chest pickup: unmistakably NOT a path marble (box silhouette,
+   wood + gold instead of the red/blue/green/yellow marble palette).
+   `accent` tints the lock jewel per power type. Returns { group, refs }
+   with refs = { lid, gem } for the idle creak/glint animation. */
+export const TREASURE_LID_OPEN = -0.55;
+export function buildTreasure(accent = 0xffc700) {
+  const group = new THREE.Group();
+  const wood = toy(0x7f4f24);
+  const darkWood = toy(0x5e3a1a);
+  const gold = toyGlow(0xffc700, { emissiveIntensity: 0.45 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.7), wood);
+  body.position.y = 0; body.castShadow = true;
+  group.add(body);
+  // lid hinged open at the back-top edge so the loot peeks out
+  const lid = new THREE.Group();
+  lid.position.set(0, 0.275, -0.35);
+  const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.26, 0.7), darkWood);
+  lidMesh.position.set(0, 0.13, 0.35); lidMesh.castShadow = true;
+  lid.add(lidMesh);
+  lid.rotation.x = TREASURE_LID_OPEN;
+  group.add(lid);
+  // gold straps binding body + lid
+  [-0.28, 0.28].forEach(sx => {
+    const strap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.57, 0.74), gold);
+    strap.position.set(sx, 0, 0); strap.castShadow = true;
+    group.add(strap);
+  });
+  // coin stack glinting inside
+  [[-0.15, 0.32, 0.05], [0.12, 0.32, -0.08], [0.0, 0.42, 0.02]].forEach(([cx, cy, cz], i) => {
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.09, 14), gold);
+    coin.position.set(cx, cy, cz); coin.rotation.y = i * 0.7; coin.castShadow = true;
+    group.add(coin);
+  });
+  // lock plate + glowing type jewel on the front face
+  const lock = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.06), gold);
+  lock.position.set(0, 0.02, 0.36); group.add(lock);
+  const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.15), toyGlow(accent, { emissiveIntensity: 1.1 }));
+  gem.position.set(0, 0.05, 0.44); gem.castShadow = true;
+  group.add(gem);
+  return { group, refs: { lid, gem } };
+}
