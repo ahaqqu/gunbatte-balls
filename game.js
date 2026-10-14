@@ -15,22 +15,26 @@ import {
 } from './src/mechanics.js';
 import { makeBallMesh as assetsMakeBallMesh, toy, toyGlow, sculpt, roundRockGeo, R, buildJalak, buildEagle, buildTreasure, TREASURE_LID_OPEN, makeGroundBlob } from './src/assets.js';
 import { buildCurve, perchVectors, createNearPathChecker } from './src/environment.js';
+import { createComposer } from './src/post.js';
+import { setupLighting } from './src/lighting.js';
+import { feltNoise, woodMat, woodBump, glassShellMat, shellGeometryFor, marbleCoreMat, buildEnvironment } from './src/materials.js';
+import { StarBurst, ComicText } from './src/vfx.js';
 
 /* ============================================================
-   GUNBATTE BALLS — Koholint Island  (demo v2, AAA pass)
+   GUNBATTE BALLS — Pulau Samalona  (demo v2, AAA pass)
    Toy-diorama marble shooter: power seeds, streaks, danger mode,
    living island, procedural music. One level, launch-ready demo.
    "Ganbatte" = do your best!
    Architecture:
      - src/assets.js     → reusable toy/ marble/ texture factories
-     - src/mechanics.js  → Zuma chain rules (level-parameterized)
+     - src/mechanics.js  → marble-chain rules (level-parameterized)
      - src/powers.js     → pluggable power-seed registry
      - src/levels.js     → declarative island + ruleset per level
      - src/environment.js→ scene builder (same assets, any level)
    game.js is the composition root: renderer + loop + input + HUD.
    ============================================================ */
 
-/* Active island (?level=id, defaults to koholint). All rules + layout
+/* Active island (?level=id, defaults to samalona). All rules + layout
    below derive from this single LevelDef — new islands reuse assets. */
 const LEVEL = getLevel(activeLevelId());
 const BALL_R = LV_BALL_R, SPACING = LV_SPACING;
@@ -136,54 +140,69 @@ const Music = {
   },
 };
 
-/* ==================== RENDERER / SCENE (sharp toy-box diorama, no blur) ====================
-   Direct forward rendering: no EffectComposer, no depth-of-field, no tilt-shift.
-   The full circular island renders 100% sharp front-to-back every frame. */
+/* ==================== RENDERER / SCENE (macro diorama pipeline) ====================
+   Linear-HDR forward rendering into an EffectComposer: SSAO → bloom →
+   DOF → ACES (src/post.js). Physical lights, 4096 soft shadows. */
 const canvas = document.getElementById('scene');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance',
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); // never native 4K
 renderer.setSize(innerWidth, innerHeight);
+renderer.useLegacyLights = false; // physical lights (always-on since r165; explicit per spec)
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.25;
+renderer.toneMappingExposure = 0.95;
+/* Quality tier: software GL (SwiftShader / llvmpipe in headless tests) cannot
+   afford 4096 shadows + transmission + SSAO. Full look stays on real GPUs. */
+const _gl = renderer.getContext();
+const _dbg = _gl.getExtension('WEBGL_debug_renderer_info');
+const _rend = _dbg ? String(_gl.getParameter(_dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
+const _hq = new URLSearchParams(location.search).has('hq');
+const SOFT = !_hq && /swiftshader|llvmpipe|software|angle \(google/i.test(_rend);
+const QUALITY = {
+  soft: SOFT,
+  shadowSize: SOFT ? (_hq ? 1024 : 768) : 2048, // tight island bounds make 2048 crisp
+  // SSAO is the most expensive pass; skip only under software without ?hq
+  ssao: !SOFT || _hq,
+  bloom: true,
+  bokeh: false, // removed — perf
+  glassTransmission: !SOFT || _hq,
+};
+if (SOFT) console.warn('[perf] software renderer detected — lite post/shadows');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8fd3ef);
-scene.fog = new THREE.Fog(0x9fd8ef, 60, 140);
+scene.background = new THREE.Color(0x4fa8d8);
+  scene.fog = new THREE.Fog(0x6eb6d4, 180, 420); // soft distance only — DOF does the macro melt
+/* Procedural PMREM environment — glass marbles pick up real reflections. */
+try { scene.environment = buildEnvironment(renderer); } catch (e) { console.warn('[env] PMREM failed:', e); }
 
-/* Top-down miniature tabletop: OrthographicCamera looking down at ~52deg. */
-const FRUSTUM = 40;
-const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
-function updateOrthoCamera() {
+/* Low-FOV perspective camera at ~54° elevation (same framing as the old
+   ortho): flattens perspective like a macro lens while keeping depth.
+   Fit solves distance so ≥40 world units are visible on both axes. */
+const CAM_FOV = 27;
+const CAM_TARGET = new THREE.Vector3(0, 0, 1);
+const CAM_DIR = new THREE.Vector3(0, 26, 19).normalize(); // elevation ≈ 54°
+const CAM_BASE = new THREE.Vector3();
+const camera = new THREE.PerspectiveCamera(CAM_FOV, 1, 30, 600);
+function updateCameraFit() {
   const aspect = innerWidth / Math.max(1, innerHeight);
-  // Portrait phones are narrow: keep the island's width fitted by expanding
-  // the vertical frustum instead of cropping the sides.
-  const fit = aspect >= 1 ? FRUSTUM : FRUSTUM / Math.max(0.5, aspect);
-  camera.left = (-fit * aspect) / 2; camera.right = (fit * aspect) / 2;
-  camera.top = fit / 2; camera.bottom = -fit / 2;
+  camera.aspect = aspect;
+  camera.fov = CAM_FOV;
+  const halfV = Math.tan(THREE.MathUtils.degToRad(CAM_FOV / 2));
+  const dist = Math.max(20 / halfV, 20 / (halfV * aspect));
+  CAM_BASE.copy(CAM_DIR).multiplyScalar(dist).add(CAM_TARGET);
+  camera.position.copy(CAM_BASE);
+  camera.lookAt(CAM_TARGET);
   camera.updateProjectionMatrix();
 }
-updateOrthoCamera();
-camera.position.set(0, 26, 20);
-camera.lookAt(0, 0, 1.0);
+updateCameraFit();
 
-/* Warm golden-hour sun + clean bright ambient + soft blue-green sky fill:
-   crisp top-face glints, shadows soft blue-green, never heavy gray. */
-scene.add(new THREE.AmbientLight(0xdfeaff, 0.55));
-scene.add(new THREE.HemisphereLight(0xa1d8ff, 0x5e9e3e, 0.85));
-const sun = new THREE.DirectionalLight(0xffc87a, 3.1);
-sun.position.set(10, 20, 15);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -34; sun.shadow.camera.right = 34;
-sun.shadow.camera.top = 34; sun.shadow.camera.bottom = -34;
-sun.shadow.camera.near = 1; sun.shadow.camera.far = 70;
-sun.shadow.bias = -0.0002; sun.shadow.normalBias = 0.03;
-sun.shadow.radius = 5;
-scene.add(sun);
-scene.add(sun.target); sun.target.position.set(0, 0, 0);
+/* Warm key + sky/ground fill (src/lighting.js): #ffebb5 @ 3.0,
+   4096² PCF-soft shadows tightly bound to the island. */
+const { key: sun } = setupLighting(scene, { shadowSize: QUALITY.shadowSize });
 
 /* ---------------- Toy helpers (canonical in src/assets.js) ----------------
    toy / toyGlow / sculpt / roundRockGeo / R are shared asset factories:
@@ -238,12 +257,21 @@ const ballFaceTex = [0, 1, 2, 3].map(k =>
   canvasTex(256, (x, s) => paintBallFace(x, s, k)));
 function marbleMat(color) {
   const idx = Math.max(0, PALETTE.indexOf(color));
-  return new THREE.MeshPhysicalMaterial({ flatShading: false,
+  const glass = QUALITY.glassTransmission
+    ? {
+        transmission: 1.0, thickness: 2.0, ior: 1.5,
+        specularIntensity: 1.0, envMapIntensity: 1.2,
+      }
+    : {
+        transmission: 0, thickness: 0, ior: 1.45,
+        specularIntensity: 1.0, envMapIntensity: 1.35,
+      };
+  return new THREE.MeshPhysicalMaterial({
+    flatShading: false,
     color: 0xffffff, map: ballFaceTex[idx],
     roughness: 0.05, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.03,
-    transmission: 0.55, thickness: 0.8, ior: 1.45,
-    specularIntensity: 1.0, emissive: color, emissiveIntensity: 0.35,
+    emissive: color, emissiveIntensity: 0.45,
+    ...glass,
   });
 }
 /* Hand-sculpted wobble lives in src/assets.js (sculpt) — see import above. */
@@ -270,7 +298,7 @@ function speckle(x, s, n, cols, aMin, aMax, rMin, rMax) {
 }
 /* Vibrant warm yellow-green grass: saturated base with sunny blotches + speckle. */
 const grassTex = canvasTex(256, (x, s) => {
-  x.fillStyle = '#7ad54a'; x.fillRect(0, 0, s, s);
+  x.fillStyle = '#62b842'; x.fillRect(0, 0, s, s);
   for (let i = 0; i < 34; i++) {
     x.globalAlpha = R(0.10, 0.22);
     x.fillStyle = ['#68bd3a', '#93e75f', '#76cc42', '#8fe063'][(Math.random() * 4) | 0];
@@ -281,7 +309,7 @@ const grassTex = canvasTex(256, (x, s) => {
 }, 9, 9);
 /* Worn sand path: warm sand with grain + tiny pebbles. */
 const sandTex = canvasTex(256, (x, s) => {
-  x.fillStyle = '#e9c37c'; x.fillRect(0, 0, s, s);
+  x.fillStyle = '#e0be7b'; x.fillRect(0, 0, s, s);
   for (let i = 0; i < 26; i++) {
     x.globalAlpha = R(0.08, 0.18);
     x.fillStyle = ['#d9ad6b', '#f4dca4', '#dfb76f'][(Math.random() * 3) | 0];
@@ -352,169 +380,16 @@ function groundBlob(x, z, r, opacity = 0.26, squashZ = 1) {
   return m;
 }
 
-/* ---------------- Post-processing: EffectComposer (toy macro look) ----------------
-   RenderPass -> UnrealBloomPass (very subtle: strength 0.22 + high 0.85
-   threshold, so only sunny plastic highlights glow) -> TiltShiftPass
-   (gentle vertical blur confined to the extreme top/bottom edges for the
-   macro-photography miniature illusion; center + HUD stay tack-sharp)
-   -> OutputPass (sRGB encode). */
-const _fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const _fsGeo = new THREE.PlaneGeometry(2, 2);
-function _fsMat(frag, uniforms) {
-  return new THREE.ShaderMaterial({
-    uniforms, depthTest: false, depthWrite: false,
-    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-    fragmentShader: frag,
-  });
-}
-class RenderPass {
-  constructor(sc, cm) { this.scene = sc; this.camera = cm; }
-  render(r, read) { r.setRenderTarget(read); r.render(this.scene, this.camera); }
-}
-class UnrealBloomPass {
-  constructor(strength = 0.22, threshold = 0.85) {
-    this.strength = strength; this.threshold = threshold;
-    this.brightMat = _fsMat(
-      'uniform sampler2D tSrc; uniform float uThr; varying vec2 vUv;' +
-      'void main(){ vec4 c = texture2D(tSrc, vUv); float l = dot(c.rgb, vec3(0.299,0.587,0.114));' +
-      ' float k = smoothstep(uThr, uThr+0.2, l); gl_FragColor = vec4(c.rgb*k, 1.0); }',
-      { tSrc: { value: null }, uThr: { value: threshold } });
-    this.blurMat = _fsMat(
-      'uniform sampler2D tSrc; uniform vec2 uDir; uniform vec2 uRes; varying vec2 vUv;' +
-      'void main(){ vec2 px = uDir / uRes;' +
-      ' vec3 c = texture2D(tSrc, vUv).rgb*0.227;' +
-      ' c += texture2D(tSrc, vUv+px*1.384).rgb*0.316; c += texture2D(tSrc, vUv-px*1.384).rgb*0.316;' +
-      ' c += texture2D(tSrc, vUv+px*3.230).rgb*0.0703; c += texture2D(tSrc, vUv-px*3.230).rgb*0.0703;' +
-      ' gl_FragColor = vec4(c, 1.0); }',
-      { tSrc: { value: null }, uDir: { value: new THREE.Vector2(1, 0) }, uRes: { value: new THREE.Vector2(1, 1) } });
-    const mk = (s) => { const m = new THREE.Mesh(_fsGeo, s); const sc = new THREE.Scene(); sc.add(m); return sc; };
-    this.brightScene = mk(this.brightMat); this.blurScene = mk(this.blurMat);
-  }
-  render(r, read, tmpA, tmpB) {
-    const sz = r.getSize(new THREE.Vector2());
-    this.brightMat.uniforms.tSrc.value = read.texture;
-    r.setRenderTarget(tmpA); r.render(this.brightScene, _fsCam);
-    this.blurMat.uniforms.tSrc.value = tmpA.texture;
-    this.blurMat.uniforms.uRes.value.set(Math.max(1, sz.x / 2), Math.max(1, sz.y / 2));
-    this.blurMat.uniforms.uDir.value.set(1, 0);
-    r.setRenderTarget(tmpB); r.render(this.blurScene, _fsCam);
-    this.blurMat.uniforms.tSrc.value = tmpB.texture;
-    this.blurMat.uniforms.uDir.value.set(0, 1);
-    r.setRenderTarget(tmpA); r.render(this.blurScene, _fsCam);
-    this.bloomTex = tmpA.texture;
-  }
-}
-class TiltShiftPass {
-  // Macro-photography miniature illusion: only the extreme top/bottom edges
-  // soften (gentle vertical blur); the playfield center stays tack-sharp.
-  // HUD is DOM above the canvas, so it is never blurred.
-  constructor() {
-    this.mat = _fsMat(
-      'uniform sampler2D tDiffuse; uniform sampler2D tBloom; uniform vec2 uRes; uniform float uBloom;' +
-      'varying vec2 vUv;' +
-      'vec3 sampleAll(vec2 uv){ return texture2D(tDiffuse, uv).rgb + texture2D(tBloom, uv).rgb * uBloom; }' +
-      'void main(){ vec3 sharp = sampleAll(vUv);' +
-      ' float d = abs(vUv.y - 0.5); float amt = smoothstep(0.36, 0.5, d);' +
-      ' vec2 px = 1.0 / uRes;' +
-      ' vec3 b = sharp * 0.36;' +
-      ' b += sampleAll(vUv + vec2(0., 1.6) * px) * 0.16;' +
-      ' b += sampleAll(vUv - vec2(0., 1.6) * px) * 0.16;' +
-      ' b += sampleAll(vUv + vec2(0., 3.6) * px) * 0.16;' +
-      ' b += sampleAll(vUv - vec2(0., 3.6) * px) * 0.16;' +
-      ' gl_FragColor = vec4(mix(sharp, b, amt * 0.75), 1.0); }',
-      { tDiffuse: { value: null }, tBloom: { value: null }, uRes: { value: new THREE.Vector2(1, 1) },
-        uBloom: { value: 0.22 } });
-    this.mesh = new THREE.Mesh(_fsGeo, this.mat);
-    this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
-  }
-  render(r, read, write, bloomTex) {
-    this.mat.uniforms.tDiffuse.value = read.texture;
-    this.mat.uniforms.tBloom.value = bloomTex;
-    const sz = r.getSize(new THREE.Vector2());
-    this.mat.uniforms.uRes.value.set(sz.x, sz.y);
-    r.setRenderTarget(write); r.render(this.fsScene, _fsCam);
-  }
-}
-class OutputPass {
-  constructor() {
-    // neutralResolve: sRGB encode only (tilt-shift already composited the bloom)
-    this.mat = _fsMat(
-      'uniform sampler2D tSrc; varying vec2 vUv;' +
-      'void main(){ vec3 col = texture2D(tSrc, vUv).rgb;' +
-      ' col = max(col, vec3(0.0));' +
-      ' float lum = dot(col, vec3(0.299,0.587,0.114)); col = mix(vec3(lum), col, 1.05);' +
-      ' vec3 a = col * 12.92; vec3 b = 1.055 * pow(col, vec3(1.0/2.4)) - 0.055;' +
-      ' vec3 srgb = mix(a, b, step(vec3(0.0031308), col));' +
-      ' gl_FragColor = vec4(srgb, 1.0); }',
-      { tSrc: { value: null } });
-    this.mesh = new THREE.Mesh(_fsGeo, this.mat);
-    this.fsScene = new THREE.Scene(); this.fsScene.add(this.mesh);
-  }
-  render(r, read) {
-    this.mat.uniforms.tSrc.value = read.texture;
-    r.setRenderTarget(null); r.render(this.fsScene, _fsCam);
-  }
-}
-class EffectComposer {
-  constructor(r) {
-    this.renderer = r;
-    this.renderPass = null; this.bloomPass = null;
-    this.tiltPass = null;
-    this.outputPass = null;
-    this.enabled = true; this._ok = true;
-    try {
-      const sz = r.getSize(new THREE.Vector2());
-      const mk = (w, h, depth) => {
-        const rt = new THREE.WebGLRenderTarget(Math.max(2, w | 0), Math.max(2, h | 0), {
-          minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
-          format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: true, stencilBuffer: false,
-        });
-        if (depth) { rt.depthTexture = new THREE.DepthTexture(Math.max(2, w | 0), Math.max(2, h | 0)); rt.depthTexture.type = THREE.UnsignedIntType; }
-        return rt;
-      };
-      this.rtScene = mk(sz.x, sz.y, true);
-      this.rtTilt = mk(sz.x, sz.y, false);
-      this.rtBloomA = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
-      this.rtBloomB = mk(Math.max(2, sz.x / 2), Math.max(2, sz.y / 2), false);
-    } catch (e) { this._ok = false; }
-  }
-  addPass(p) {
-    if (p instanceof RenderPass) this.renderPass = p;
-    else if (p instanceof UnrealBloomPass) this.bloomPass = p;
-    else if (p instanceof TiltShiftPass) this.tiltPass = p;
-    else if (p instanceof OutputPass) this.outputPass = p;
-    return this;
-  }
-  setSize(w, h) {
-    const rSet = (rt, ww, hh) => {
-      rt.setSize(Math.max(2, ww | 0), Math.max(2, hh | 0));
-      if (rt.depthTexture) { rt.depthTexture.image.width = Math.max(2, ww | 0); rt.depthTexture.image.height = Math.max(2, hh | 0); }
-    };
-    if (this.rtScene) rSet(this.rtScene, w, h);
-    if (this.rtTilt) rSet(this.rtTilt, w, h);
-    if (this.rtBloomA) rSet(this.rtBloomA, w / 2, h / 2);
-    if (this.rtBloomB) rSet(this.rtBloomB, w / 2, h / 2);
-  }
-  render() {
-    if (!this.enabled || !this._ok || !this.renderPass) { this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); return; }
-    try {
-      this.renderPass.render(this.renderer, this.rtScene);
-      let bloomTex = null;
-      if (this.bloomPass) { this.bloomPass.render(this.renderer, this.rtScene, this.rtBloomA, this.rtBloomB); bloomTex = this.bloomPass.bloomTex; }
-      if (this.tiltPass) this.tiltPass.render(this.renderer, this.rtScene, this.rtTilt, bloomTex || this.rtBloomA.texture);
-      if (this.outputPass) this.outputPass.render(this.renderer, this.rtTilt);
-      else { this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
-    } catch (e) { this.enabled = false; this.renderer.setRenderTarget(null); this.renderer.render(scene, camera); }
-  }
-}
+/* ---------------- Post-processing: SSAO → Bloom → DOF → ACES (src/post.js) ----------------
+   Exact required pass order: RenderPass → SSAOPass (contact shadows) →
+   UnrealBloomPass (emissive-only glow, threshold 1.0) → BokehPass (macro
+   DOF focused on the cannon) → OutputPass (ACES exposure 1.2 + sRGB). */
 let composer = null;
 try {
-  composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(new UnrealBloomPass(0.22, 0.85));
-  composer.addPass(new TiltShiftPass());
-  composer.addPass(new OutputPass());
-} catch (e) { composer = null; }
+  composer = createComposer(renderer, scene, camera, {
+    ssao: QUALITY.ssao, bloom: QUALITY.bloom,
+  });
+} catch (e) { console.error('[post] composer init failed:', e); composer = null; }
 
 
 /* ---- gradient sky dome + sun disc ---- */
@@ -531,11 +406,11 @@ try {
   });
   scene.add(new THREE.Mesh(new THREE.SphereGeometry(170, 24, 16), skyMat));
   const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(7, 32),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xfff6c9, emissive: 0xfff6c9, emissiveIntensity: 0.85, fog: false }));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: 0xfff6c9, emissive: 0xfff6c9, emissiveIntensity: 0.85, fog: false , bumpMap: feltNoise, bumpScale: 0.28}));
   sunDisc.position.set(-55, 42, -120); sunDisc.lookAt(0, 10, 0);
   scene.add(sunDisc);
   const glow = new THREE.Mesh(new THREE.CircleGeometry(13, 32),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xfff6c9, emissive: 0xfff6c9, emissiveIntensity: 0.85, transparent: true, opacity: 0.35, fog: false }));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: 0xfff6c9, emissive: 0xfff6c9, emissiveIntensity: 0.85, transparent: true, opacity: 0.35, fog: false , bumpMap: feltNoise, bumpScale: 0.28}));
   glow.position.copy(sunDisc.position).add(new THREE.Vector3(0, 0, -0.5)); glow.lookAt(0, 10, 0);
   scene.add(glow);
 }
@@ -545,25 +420,22 @@ let waterMesh, waterBase;
 const foamBubbles = [];
 {
   const g = new THREE.PlaneGeometry(190, 190, 46, 46);
-  waterMesh = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ flatShading: true,
+  waterMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ flatShading: true,
     color: 0xffffff, map: waterTex, roughness: 0.2, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.1,
-  }));
+    }));
   waterMesh.rotation.x = -Math.PI / 2; waterMesh.position.y = -1.65;
   waterMesh.receiveShadow = true;
   scene.add(waterMesh);
   waterBase = g.attributes.position.array.slice();
-  const foamMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
+  const foamMat = new THREE.MeshStandardMaterial({ flatShading: true,
     color: 0xffffff, roughness: 0.2, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.1,
-  });
+    });
   const foam1 = new THREE.Mesh(new THREE.TorusGeometry(26.4, 0.55, 12, 88), foamMat);
   foam1.rotation.x = Math.PI / 2; foam1.position.y = -1.35; foam1.name = 'foam1';
   scene.add(foam1);
   const foam2 = new THREE.Mesh(new THREE.TorusGeometry(28.1, 0.32, 10, 88),
-    new THREE.MeshPhysicalMaterial({ flatShading: true,
-      color: 0xffffff, transparent: true, opacity: 0.6, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1,
-    }));
+    new THREE.MeshStandardMaterial({ flatShading: true,
+      color: 0xffffff, transparent: true, opacity: 0.6, roughness: 0.2, metalness: 0.0, }));
   foam2.rotation.x = Math.PI / 2; foam2.position.y = -1.45; foam2.name = 'foam2';
   scene.add(foam2);
 /* Streaky foam alpha texture: bright white surf with soft gaps (scrolls like surf). */
@@ -588,9 +460,8 @@ const foamTex = (() => {
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   return t;
 })();
-const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
+const foamCollarMat = new THREE.MeshStandardMaterial({ flatShading: true,
   color: 0xffffff, map: foamTex, roughness: 0.2, metalness: 0.0,
-  clearcoat: 1.0, clearcoatRoughness: 0.1,
   transparent: true, opacity: 0.95, side: THREE.DoubleSide,
 });
 {
@@ -601,10 +472,9 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
   scene.add(collar);
 }
   // tiny white foam bubbles scattered around the circular island border
-  const bubMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
+  const bubMat = new THREE.MeshStandardMaterial({ flatShading: true,
     color: 0xffffff, roughness: 0.2, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.1,
-  });
+    });
   for (let i = 0; i < 44; i++) {
     const a = (i / 44) * Math.PI * 2 + R(-0.08, 0.08);
     const rr = 26.4 + R(-0.5, 0.9);
@@ -617,22 +487,22 @@ const foamCollarMat = new THREE.MeshPhysicalMaterial({ flatShading: true,
 }
 
 /* ---- island diorama base (open-ended side: no z-fighting) ---- */
-const island = new THREE.Group(); scene.add(island);
+const island = new THREE.Group(); island.matrixAutoUpdate = false; scene.add(island);
 {
   const side = new THREE.Mesh(
     new THREE.CylinderGeometry(26, 22, 3.2, 64, 1, true),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9c6b3c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide })
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0x9c6b3c, roughness: 0.55, metalness: 0.0, side: THREE.DoubleSide , bumpMap: feltNoise, bumpScale: 0.28})
   );
   side.position.y = -1.02; side.receiveShadow = true; side.castShadow = true;
   island.add(side);
   const top = new THREE.Mesh(
     new THREE.CylinderGeometry(26, 26, 0.5, 64),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff, map: grassTex, bumpMap: grassBump, bumpScale: 0.15, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1})
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0xffffff, map: grassTex, bumpMap: feltNoise, bumpScale: 0.32, roughness: 0.5, metalness: 0.0, clearcoat: 0.0})
   );
   top.position.y = 0.35; top.receiveShadow = true;
   island.add(top);
-  const patchMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x66c142, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const patchMat2 = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9cec7c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const patchMat = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x54a038, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const patchMat2 = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x62b842, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[-6,-4,3.2],[6,-4.5,2.6],[-3,6.5,2.8],[7,5.5,2.2],[0,-5.5,2.0],[-10,3,2.0],[11,0,1.8],
    [-13,9,2.8],[13,-9,3.0],[-15,-6,2.4],[15,11,2.6],[0,13,2.4],[-8,-13,2.6],
    [-19,4,2.6],[19,-3,2.8],[-6,17,2.4],[4,-18,2.6]]
@@ -642,7 +512,7 @@ const island = new THREE.Group(); scene.add(island);
       island.add(p);
     });
   const rim = new THREE.Mesh(new THREE.TorusGeometry(25.35, 0.7, 12, 96),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf2dfa8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0xf2dfa8, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   rim.rotation.x = Math.PI / 2; rim.position.y = 0.35; rim.receiveShadow = true;
   island.add(rim);
 }
@@ -654,22 +524,22 @@ const { curve, curveLen } = buildCurve(LEVEL);
   // worn inset border: darker sand rim peeking under the road edges
   const tube0 = new THREE.TubeGeometry(curve, 220, 1.14, 12, false);
   tube0.scale(1, 0.3, 1); tube0.computeVertexNormals();
-  const border = new THREE.Mesh(tube0, new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xc49a63, map: sandTex, bumpMap: sandBump, bumpScale: 0.12, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+  const border = new THREE.Mesh(tube0, woodMat({ color: 0xd4a86a, map: sandTex, bumpMap: woodBump(8, 1), bumpScale: 0.22 }));
   border.position.y = 0.1; border.receiveShadow = true;
   scene.add(border);
   const tube = new THREE.TubeGeometry(curve, 220, 1.0, 12, false);
   tube.scale(1, 0.35, 1); tube.computeVertexNormals();
-  const road = new THREE.Mesh(tube, new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff, map: sandTex, bumpMap: sandBump, bumpScale: 0.12, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+  const road = new THREE.Mesh(tube, woodMat({ color: 0xf0dcb0, map: sandTex, bumpMap: woodBump(10, 1), bumpScale: 0.22 }));
   road.position.y = 0.15; road.receiveShadow = true;
   scene.add(road);
   const tube2 = new THREE.TubeGeometry(curve, 220, 0.62, 12, false);
   tube2.scale(1, 0.35, 1); tube2.computeVertexNormals();
-  const inner = new THREE.Mesh(tube2, new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf7e2ac, map: sandTex, bumpMap: sandBump, bumpScale: 0.12, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+  const inner = new THREE.Mesh(tube2, woodMat({ color: 0xf7e2ac, map: sandTex, bumpMap: woodBump(6, 1), bumpScale: 0.2 }));
   inner.position.y = 0.42; inner.receiveShadow = true;
   scene.add(inner);
   const start = curve.getPointAt(0);
   const portal = new THREE.Group();
-  const rockMat = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x7d8597, roughness: 0.2, });
+  const rockMat = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0x7d8597, roughness: 0.2, });
   const m1 = new THREE.Mesh(roundRockGeo(1.6), rockMat);
   m1.position.set(-0.9, 1.0, 0); m1.castShadow = true;
   const m2 = new THREE.Mesh(roundRockGeo(1.6), rockMat);
@@ -677,7 +547,7 @@ const { curve, curveLen } = buildCurve(LEVEL);
   const mtop = new THREE.Mesh(roundRockGeo(1.7), rockMat);
   mtop.position.set(0, 2.2, 0); mtop.castShadow = true;
   const hole = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0x14101f , emissive: 0x14101f, emissiveIntensity: 0.85}));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: 0x14101f , emissive: 0x14101f, emissiveIntensity: 2.5, bumpMap: feltNoise, bumpScale: 0.28}));
   hole.position.set(0, 0.9, 0.9);
   portal.add(m1, m2, mtop, hole);
   portal.position.copy(start).add(new THREE.Vector3(...LEVEL.portalOffset));
@@ -694,8 +564,8 @@ const skullPos = curve.getPointAt(1);
 let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
 {
   const g = new THREE.Group();
-  const stone = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x8d99ae, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const bone = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf8f3df, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const stone = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x8d99ae, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const bone = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xf8f3df, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   // chunky organic mound: squashed boulder + side bumps (no sharp cone)
   const mound = new THREE.Mesh(sculpt(new THREE.IcosahedronGeometry(3.1, 2), 0.12), stone);
   mound.position.y = 1.6; mound.scale.set(1, 0.78, 0.95);
@@ -707,15 +577,15 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
     g.add(bump);
   });
   // moss blobs + draping moss beard over the crown
-  const mossM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x6fae5a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const mossM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x6fae5a, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[-1.4, 2.9, 1.5, 0.55], [1.6, 2.5, 1.3, 0.45], [0.4, 3.4, -0.6, 0.6], [-0.9, 3.8, 0.4, 0.5], [1.2, 3.6, -0.2, 0.42]].forEach(([bx, by, bz, br]) => {
     const mo = new THREE.Mesh(new THREE.SphereGeometry(br, 12, 10), mossM);
     mo.position.set(bx, by, bz); mo.scale.y = 0.45;
     g.add(mo);
   });
   // creeping vines spilling over the top with leaf dots
-  const vineM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3d8b4f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const vineLeafM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x5cc46a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const vineM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x3d8b4f, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const vineLeafM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x5cc46a, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[-1.8, 0.6], [-0.7, 1.4], [0.5, 1.1], [1.7, 0.2], [2.5, -0.6]].forEach(([vx, vz], vi) => {
     const top = new THREE.Vector3(vx, 4.1 - (vi % 2) * 0.3, vz);
     const mid = new THREE.Vector3(vx * 1.25, 2.5, vz + 1.1);
@@ -733,7 +603,7 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
     });
   });
   skullMouth = new THREE.Mesh(new THREE.CircleGeometry(1.25, 24),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x0d0a1a, emissive: 0x0d0a1a, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x0d0a1a, emissive: 0x0d0a1a, emissiveIntensity: 0.7, clearcoatRoughness: 0.1}));
   skullMouth.position.set(0, 1.0, 2.78);
   g.add(skullMouth);
   // chunky stone lips around the cave mouth
@@ -752,7 +622,7 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
     g.add(tooth);
   });
   const skull = new THREE.Mesh(new THREE.SphereGeometry(1.15, 20, 16),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf8f3df, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0xf8f3df, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   skull.position.set(0, 3.6, 1.4); skull.scale.set(1, 0.9, 0.8); skull.castShadow = true;
   g.add(skull);
   // heavy brow ridges + chunky jaw for a toy-monster read
@@ -764,13 +634,13 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
   const jaw = new THREE.Mesh(new THREE.SphereGeometry(0.85, 16, 12), bone);
   jaw.position.set(0, 0.15, 2.2); jaw.scale.set(1.15, 0.55, 0.9); jaw.castShadow = true;
   g.add(jaw);
-  skullEyeMat = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3a0d0d, emissive: 0xff2200, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  skullEyeMat = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x3a0d0d, emissive: 0xff2200, emissiveIntensity: 2.8, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [-0.45, 0.45].forEach(x => {
     const e = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), skullEyeMat);
     e.position.set(x, 3.7, 2.15); g.add(e);
   });
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x1a1a2e, emissive: 0x1a1a2e, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0x1a1a2e, emissive: 0x1a1a2e, emissiveIntensity: 0.7, clearcoatRoughness: 0.1}));
   nose.position.set(0, 3.35, 2.25); nose.scale.set(1, 1.2, 0.6); g.add(nose);
   g.position.copy(skullPos).add(new THREE.Vector3(...LEVEL.skullOffset));
   { // mouth + eyes face back down the road so the skull greets its dinner
@@ -783,7 +653,7 @@ let skullEyeMat, skullMouth, skullCave = null, skullMound = null;
 }
 const smokes = [];
 {
-  const sm = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0x555566, emissive: 0x555566, emissiveIntensity: 0.85, transparent: true, opacity: 0.35 });
+  const sm = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: 0x555566, emissive: 0x555566, emissiveIntensity: 0.85, transparent: true, opacity: 0.35 , bumpMap: feltNoise, bumpScale: 0.28});
   for (let i = 0; i < 5; i++) {
     const s = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 10), sm.clone());
     s.position.copy(skullPos).add(new THREE.Vector3(0.4 + Math.random(), 4.5 + i * 0.7, 0.5));
@@ -792,18 +662,18 @@ const smokes = [];
   }
 }
 
-/* ---- Wind Fish egg shrine (hidden on the beach — a tiny homage) ---- */
+/* ---- Beach egg shrine (hidden spotted egg on the beach) ---- */
 {
   const shrine = new THREE.Group();
   const nest = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.28, 10, 18),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x8d99ae, roughness: 0.2, }));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0x8d99ae, roughness: 0.2, }));
   nest.rotation.x = Math.PI / 2; nest.position.y = 0.25; nest.castShadow = true;
   shrine.add(nest);
   const egg = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xfdf6e3, roughness: 0.2, }));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0xfdf6e3, roughness: 0.2, }));
   egg.scale.set(1, 1.3, 1); egg.position.y = 0.65; egg.castShadow = true;
   shrine.add(egg);
-  const spotM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x9d4edd, roughness: 0.2, });
+  const spotM = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0x9d4edd, roughness: 0.2, });
   [[0.2, 0.7, 0.3], [-0.25, 0.55, 0.28], [0, 0.9, -0.3]].forEach(([ox, oy, oz]) => {
     const d = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), spotM);
     d.position.set(ox, oy, oz); shrine.add(d);
@@ -814,45 +684,67 @@ const smokes = [];
   groundBlob(LEVEL.shrine.x, LEVEL.shrine.z, 1.1, 0.24);
 }
 
-/* ---- toy decorations ---- */
-function chibiTree(x, z, s = 1) {
-  const g = new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.28 * s, 0.36 * s, 1.0 * s, 16),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x7f4f24, roughness: 0.2, }));
-  trunk.position.y = 0.5 * s; trunk.castShadow = true;
-  g.add(trunk);
-  const greens = [0x37b24d, 0x4cc96f, 0x6fdc73];
-  [[0, 1.5, 0, 0.95], [-0.4, 1.15, 0.15, 0.6], [0.42, 1.2, -0.1, 0.62]].forEach(([ox, oy, oz, r], i) => {
-    // lower-poly hand-sculpted canopy blobs (faceted felt, not perfect spheres)
-    const f = new THREE.Mesh(sculpt(new THREE.IcosahedronGeometry(r * s, 1), 0.09 * s),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: greens[i % 3], roughness: 0.2, }));
-    f.position.set(ox * s, oy * s, oz * s); f.castShadow = true;
-    g.add(f);
+/* ---- instanced scatter (one draw call per part type) ---- */
+function makeInstanced(geo, mat, transforms, { cast = true, receive = true } = {}) {
+  if (!transforms.length) return null;
+  const im = new THREE.InstancedMesh(geo, mat, transforms.length);
+  const d = new THREE.Object3D();
+  transforms.forEach((t, i) => {
+    d.position.copy(t.pos);
+    d.rotation.copy(t.rot);
+    d.scale.copy(t.scale);
+    d.updateMatrix();
+    im.setMatrixAt(i, d.matrix);
   });
-  g.position.set(x, 0.5, z);
-  g.rotation.y = Math.random() * 6;
-  g.userData.treeTop = true;
-  scene.add(g);
+  im.instanceMatrix.needsUpdate = true;
+  im.castShadow = cast; im.receiveShadow = receive;
+  im.frustumCulled = true;
+  im.matrixAutoUpdate = false;
+  return im;
+}
+
+/* ---- toy decorations (instanced scatter) ---- */
+const TREE_GREENS = [0x37b24d, 0x4cc96f, 0x6fdc73];
+const treeTrunkXf = [], treeCanopyXf = [[], [], []], rockXf = [];
+const treeTrunkGeo = new THREE.CylinderGeometry(0.28, 0.36, 1.0, 12);
+const treeCanopyGeo = new THREE.IcosahedronGeometry(1, 1);
+const sharedRockGeo = roundRockGeo(0.5);
+const treeTrunkMat = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0x7f4f24, roughness: 0.55 });
+const treeCanopyMats = TREE_GREENS.map(c => new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: c, roughness: 0.5 }));
+const rockMatI = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0xadb5bd, roughness: 0.5 });
+
+function chibiTree(x, z, s = 1) {
+  const rotY = Math.random() * 6;
+  const e = new THREE.Euler(0, rotY, 0);
+  treeTrunkXf.push({
+    pos: new THREE.Vector3(x, 0.5 + 0.5 * s, z),
+    rot: e,
+    scale: new THREE.Vector3(s, s, s),
+  });
+  const blobs = [[0, 1.5, 0, 0.95], [-0.4, 1.15, 0.15, 0.6], [0.42, 1.2, -0.1, 0.62]];
+  blobs.forEach(([ox, oy, oz, r], i) => {
+    const cos = Math.cos(rotY), sin = Math.sin(rotY);
+    const wx = x + (ox * cos + oz * sin) * s;
+    const wz = z + (-ox * sin + oz * cos) * s;
+    treeCanopyXf[i % 3].push({
+      pos: new THREE.Vector3(wx, 0.5 + oy * s, wz),
+      rot: e,
+      scale: new THREE.Vector3(r * s, r * s, r * s),
+    });
+  });
   groundBlob(x, z, 1.25 * s, 0.26);
 }
 function rock(x, z, s = 1) {
-  const m = new THREE.Mesh(roundRockGeo(0.5 * s),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xadb5bd, roughness: 0.2, }));
-  m.position.set(x, 0.75, z); m.castShadow = true; m.rotation.set(Math.random(), Math.random() * 3, 0);
-  scene.add(m);
+  rockXf.push({
+    pos: new THREE.Vector3(x, 0.75, z),
+    rot: new THREE.Euler(Math.random(), Math.random() * 3, 0),
+    scale: new THREE.Vector3(s, s, s),
+  });
   groundBlob(x, z, 0.85 * s, 0.24);
 }
+const flowerXf = [];
 function flower(x, z, c) {
-  const g = new THREE.Group();
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 10),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x2d6a4f }));
-  stem.position.y = 0.25; g.add(stem);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: c, roughness: 0.2, }));
-  head.position.y = 0.55; head.castShadow = true;
-  head.name = 'bloom';
-  g.add(head);
-  g.position.set(x, 0.55, z); scene.add(g);
+  flowerXf.push({ x, z, c, rot: R(0, 6.28) });
 }
 /* Scattered 3D grass: tiny 2-3 triangle blade clusters (single-sided tris). */
 const bladeGeo = (() => {
@@ -863,32 +755,30 @@ const bladeGeo = (() => {
   return geo;
 })();
 const bladeMats = [0x3a9e4f, 0x46b457, 0x2f8f43].map(c =>
-  new THREE.MeshPhysicalMaterial({ flatShading: true, color: c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide }));
+  new THREE.MeshStandardMaterial({ flatShading: true, color: c, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide , bumpMap: feltNoise, bumpScale: 0.28}));
+const grassXf = [];
 function grassTuft(x, z) {
-  const g = new THREE.Group();
+  const baseRot = R(0, 6.28);
   for (let i = 0; i < 3; i++) {
-    const b = new THREE.Mesh(bladeGeo, bladeMats[(Math.random() * 3) | 0]);
-    b.position.set((i - 1) * 0.11, 0, (Math.random() - 0.5) * 0.1);
-    b.rotation.y = R(0, Math.PI);
-    b.rotation.x = R(-0.12, 0.12);
-    const s = R(0.8, 1.25); b.scale.set(s, s, s);
-    g.add(b);
+    grassXf.push({
+      pos: new THREE.Vector3(x + (i - 1) * 0.11, 0.6, z + (Math.random() - 0.5) * 0.1),
+      rot: new THREE.Euler(R(-0.12, 0.12), baseRot + R(0, Math.PI), 0),
+      scale: new THREE.Vector3(1, 1, 1).multiplyScalar(R(0.8, 1.25)),
+      mat: (Math.random() * 3) | 0,
+    });
   }
-  g.position.set(x, 0.6, z);
-  g.rotation.y = R(0, 6.28);
-  scene.add(g);
 }
 const pinwheels = [];
 function pinwheel(x, z, c) {
   const g = new THREE.Group();
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x8a5a33 }));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.95, metalness: 0.0, color: 0x8a5a33 , bumpMap: feltNoise, bumpScale: 0.28}));
   pole.position.y = 0.8; pole.castShadow = true; g.add(pole);
   const hub = new THREE.Group(); hub.position.y = 1.65;
   const paddleGeo = new THREE.SphereGeometry(0.3, 12, 10);
   for (let i = 0; i < 4; i++) {
     const blade = new THREE.Mesh(paddleGeo,
-      new THREE.MeshPhysicalMaterial({ flatShading: true, color: i % 2 ? 0xffffff : c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+      new THREE.MeshStandardMaterial({ flatShading: true, color: i % 2 ? 0xffffff : c, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
     blade.scale.set(1, 0.68, 0.14);
     blade.position.set(Math.cos(i * Math.PI / 2) * 0.3, Math.sin(i * Math.PI / 2) * 0.3, 0);
     blade.rotation.z = i * Math.PI / 2 + 0.5;
@@ -910,7 +800,7 @@ const perchRings = [], perchHit = [];
 {
   // Tall climbable pine: thick trunk the tarsius hugs + high canopy that
   // crowns well above his straw hat (he reads as clinging, not standing).
-  const trunkM = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x7f4f24, roughness: 0.2 });
+  const trunkM = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0x7f4f24, roughness: 0.2 });
   const canopyCols = [0x37b24d, 0x4cc96f, 0x6fdc73];
   function perchTree(x, z) {
     const g = new THREE.Group();
@@ -931,12 +821,12 @@ const perchRings = [], perchHit = [];
     // pulled to the back so the south face where he clings stays open
     [[0, 7.6, -1.5, 1.0], [-1.35, 6.9, -1.3, 0.9], [1.4, 7.0, -1.35, 0.95], [0.1, 6.5, -2.1, 0.8]].forEach(([ox, oy, oz, r], i) => {
       const f = new THREE.Mesh(sculpt(new THREE.IcosahedronGeometry(r, 1), 0.12),
-        new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: canopyCols[i % 3], roughness: 0.2 }));
+        new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: canopyCols[i % 3], roughness: 0.2 }));
       f.position.set(ox, oy, oz); f.castShadow = true;
       g.add(f);
     });
     // hanging vines with leaf tufts (tarsier playground dressing)
-    const vineM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const vineM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.5, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
     [[1.0, 0.3], [-1.0, -0.35]].forEach(([vx, vz], vi) => {
       const v = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.8 - vi * 0.3, 8), vineM);
       v.position.set(vx, 4.7, vz); g.add(v);
@@ -953,9 +843,9 @@ const perchRings = [], perchHit = [];
   const hitM = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false });
   PERCHES.forEach((p, i) => {
     perchTree(p.x, p.z);
-    const ringM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffe8a3,
-      emissive: 0xffe8a3, emissiveIntensity: 0.25, roughness: 0.2, metalness: 0.0,
-      clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const ringM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xffe8a3,
+      emissive: 0xffe8a3, emissiveIntensity: 1.2, roughness: 0.2, metalness: 0.0,
+      clearcoatRoughness: 0.1 });
     const ring = new THREE.Mesh(new THREE.TorusGeometry(1.9, 0.16, 10, 32), ringM);
     ring.rotation.x = Math.PI / 2; ring.position.set(p.x, 0.75, p.z);
     scene.add(ring); perchRings.push(ring);
@@ -991,12 +881,89 @@ const perchRings = [], perchHit = [];
     if (nearPath(x, z, 1.0)) continue;
     grassTuft(x, z);
   }
+  // flush instanced grass + flowers (draw-call collapse)
+  {
+    const byMat = [[], [], []];
+    grassXf.forEach(t => byMat[t.mat % 3].push(t));
+    byMat.forEach((list, i) => {
+      const im = makeInstanced(bladeGeo, bladeMats[i], list, { cast: false, receive: true });
+      if (im) { im.matrixAutoUpdate = false; scene.add(im); }
+    });
+    // flowers: one stem instanced + per-color heads
+    const stems = [], heads = [[], [], [], [], []];
+    const fcols = [0xff5d8f, 0xffca3a, 0xff595e, 0xffffff, 0xc77dff];
+    flowerXf.forEach((f) => {
+      stems.push({
+        pos: new THREE.Vector3(f.x, 0.55 + 0.25, f.z),
+        rot: new THREE.Euler(0, f.rot, 0),
+        scale: new THREE.Vector3(1, 1, 1),
+      });
+      const hi = Math.max(0, fcols.indexOf(f.c));
+      heads[hi < 0 ? 0 : hi].push({
+        pos: new THREE.Vector3(f.x, 0.55 + 0.55, f.z),
+        rot: new THREE.Euler(0, f.rot, 0),
+        scale: new THREE.Vector3(1, 1, 1),
+      });
+    });
+    const stemGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.5, 8);
+    const stemMat = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x2d6a4f, roughness: 0.6, metalness: 0 });
+    const stemIM = makeInstanced(stemGeo, stemMat, stems, { cast: false, receive: true });
+    if (stemIM) scene.add(stemIM);
+    const headGeo = new THREE.SphereGeometry(0.16, 8, 6);
+    heads.forEach((list, i) => {
+      if (!list.length) return;
+      const mat = new THREE.MeshStandardMaterial({ flatShading: true, color: fcols[i], roughness: 0.55, metalness: 0 });
+      const im = makeInstanced(headGeo, mat, list, { cast: true, receive: true });
+      if (im) scene.add(im);
+    });
+    grassXf.length = 0; flowerXf.length = 0;
+  }
+  // flush instanced trees + rocks
+  {
+    const trunkIM = makeInstanced(treeTrunkGeo, treeTrunkMat, treeTrunkXf, { cast: true, receive: true });
+    if (trunkIM) scene.add(trunkIM);
+    treeCanopyXf.forEach((list, i) => {
+      const im = makeInstanced(treeCanopyGeo, treeCanopyMats[i], list, { cast: true, receive: true });
+      if (im) scene.add(im);
+    });
+    const rockIM = makeInstanced(sharedRockGeo, rockMatI, rockXf, { cast: true, receive: true });
+    if (rockIM) scene.add(rockIM);
+    treeTrunkXf.length = 0; treeCanopyXf.forEach(a => a.length = 0); rockXf.length = 0;
+  }
+  // glowing crystals (emissive >= 2.5 so bloom catches them)
+  {
+    const crystalCols = [0x4cc9f0, 0xf72585, 0xffc700, 0x7b2cbf, 0x06d6a0];
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * 6.28, r = 4 + Math.random() * 18;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      if (nearPath(x, z, 1.6)) continue;
+      const col = crystalCols[i % crystalCols.length];
+      const g = new THREE.Group();
+      const n = 2 + ((Math.random() * 3) | 0);
+      for (let k = 0; k < n; k++) {
+        const h = 0.5 + Math.random() * 1.1;
+        const m = new THREE.Mesh(
+          new THREE.ConeGeometry(0.18 + Math.random() * 0.16, h, 5),
+          new THREE.MeshStandardMaterial({
+            color: col, emissive: col, emissiveIntensity: 2.8,
+            roughness: 0.35, metalness: 0.1, flatShading: true,
+          })
+        );
+        m.position.set((Math.random() - 0.5) * 0.5, h * 0.4, (Math.random() - 0.5) * 0.5);
+        m.rotation.set((Math.random() - 0.5) * 0.5, Math.random() * 6, (Math.random() - 0.5) * 0.5);
+        m.castShadow = true;
+        g.add(m);
+      }
+      g.position.set(x, 0.7, z);
+      scene.add(g);
+    }
+  }
   // chunky storybook house: rounded walls, timber corners, fat pyramid roof
   const house = new THREE.Group();
-  const wallM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xfff3d6, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const woodM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const roofM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xd62828, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const roofDark = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xa81f1f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const wallM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xfff3d6, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const woodM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.55, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const roofM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xd62828, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const roofDark = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xa81f1f, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   const roundedBoxGeo = (w, h, d, r) => {
     const s = new THREE.Shape();
     const x0 = -w / 2, x1 = w / 2, y0 = -h / 2, y1 = h / 2;
@@ -1028,19 +995,19 @@ const perchRings = [], perchHit = [];
   finial.position.y = 3.25; finial.castShadow = true; house.add(finial);
   // rounded capsule door + round glowing window with timber ring
   const door = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.42, 4, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x6c584c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0x6c584c, roughness: 0.55, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   door.position.set(-0.45, 0.62, 1.08); door.scale.z = 0.4; house.add(door);
   const knob = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffd166, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0xffd166, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   knob.position.set(-0.25, 0.62, 1.2); house.add(knob);
   const winRing = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.09, 10, 20), woodM);
   winRing.position.set(0.75, 1.05, 1.1); house.add(winRing);
   const winGlow = new THREE.Mesh(new THREE.CircleGeometry(0.28, 20),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xffd166, emissive: 0xffd166, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xffd166, emissive: 0xffd166, emissiveIntensity: 2.5, clearcoatRoughness: 0.1}));
   winGlow.position.set(0.75, 1.05, 1.11); house.add(winGlow);
   // round stone chimney with cap
   const chim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 1.0, 14),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x9aa0a8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0x9aa0a8, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   chim.position.set(-0.85, 2.35, -0.35); chim.castShadow = true; house.add(chim);
   const chimCap = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), roofDark);
   chimCap.position.set(-0.85, 2.9, -0.35); chimCap.scale.y = 0.6; house.add(chimCap);
@@ -1050,26 +1017,26 @@ const perchRings = [], perchHit = [];
   // torch with round teardrop flame (no sharp cones)
   const torch = new THREE.Group();
   const tpole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 1.8, 14),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x5c3a1e, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0x5c3a1e, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   tpole.position.y = 0.9; tpole.castShadow = true; torch.add(tpole);
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.13, 0.22, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x3d2b1c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: 0x3d2b1c, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   cup.position.y = 1.85; torch.add(cup);
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.26, 14, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xff7b00, emissive: 0xff7b00, emissiveIntensity: 0.9, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xff7b00, emissive: 0xff7b00, emissiveIntensity: 2.5, clearcoatRoughness: 0.1}));
   flame.position.y = 2.15; flame.scale.set(1, 1.5, 1); flame.name = 'flame'; torch.add(flame);
   const core = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 1.0, clearcoat: 1.0, clearcoatRoughness: 0.1}));
+    new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.2, metalness: 0.0, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 2.5, clearcoatRoughness: 0.1}));
   core.position.y = 2.1; torch.add(core);
-  const tl = new THREE.PointLight(0xff9d3c, 6, 11, 1.6);
+  const tl = new THREE.PointLight(0xff9d3c, 1.2, 11, 1.6);
   tl.position.y = 2.3; tl.name = 'torchlight'; torch.add(tl);
   torch.position.set(LEVEL.torch.x, 0.5, LEVEL.torch.z);
   scene.add(torch);
   groundBlob(LEVEL.torch.x, LEVEL.torch.z, 0.9, 0.25);
   // crafted trail fencing: chunky posts + sagging rope rails beside the track
   {
-    const postM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
-    const ropeM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xd9b382, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const postM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x7c5233, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+    const ropeM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xd9b382, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
     const postGeo = new THREE.CylinderGeometry(0.09, 0.12, 0.95, 8);
     const knobGeo = new THREE.SphereGeometry(0.12, 10, 8);
     // [tStart, tEnd, side] stretches of path to fence (offset clear of rolling balls)
@@ -1113,7 +1080,7 @@ const perchRings = [], perchHit = [];
 /* clouds anchored at frame edges (parallax puffs, never cover play) */
 const clouds = [];
 {
-  const cm = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xffffff, roughness: 0.2, });
+  const cm = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, color: 0xffffff, roughness: 0.2, });
   const spots = [[-23, 11, 0], [23, 11.5, 1], [-22, 12, -12], [22, 12.5, -13]];
   spots.forEach(([cx, cy, cz], i) => {
     const g = new THREE.Group();
@@ -1133,7 +1100,7 @@ const butterflies = [];
   const cols = [0xff9e00, 0xc77dff, 0x90e0ef];
   for (let i = 0; i < 3; i++) {
     const g = new THREE.Group();
-    const wm = new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: cols[i], emissive: cols[i], emissiveIntensity: 0.85, side: THREE.DoubleSide });
+    const wm = new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: cols[i], emissive: cols[i], emissiveIntensity: 0.85, side: THREE.DoubleSide , bumpMap: feltNoise, bumpScale: 0.28});
     const wgL = new THREE.PlaneGeometry(0.35, 0.28); wgL.translate(0.17, 0, 0);
     const wgR = new THREE.PlaneGeometry(0.35, 0.28); wgR.translate(-0.17, 0, 0);
     const L = new THREE.Mesh(wgL, wm), R = new THREE.Mesh(wgR, wm);
@@ -1144,19 +1111,19 @@ const butterflies = [];
   }
 }
 
-/* ==================== TARSIUS SHOOTER (tree-clinger) ==================== */
+/* ==================== TARSIER SHOOTER (tree-clinger) ==================== */
 const tarsius = new THREE.Group();
 let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
 {
   // (no stump: this little one clings straight to the perch trunk, tarsier-style —
   // the trunk passes just behind his belly and his pad-tipped limbs grip the bark)
   // cute mushrooms + leafy sprouts growing round the rim
-  const shroomStemM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xf7ecd4,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
-  const shroomCapM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xe63946,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
-  const dotM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0xffffff,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  const shroomStemM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xf7ecd4,
+    roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const shroomCapM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xe63946,
+    roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const dotM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0xffffff,
+    roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[1.05, 0.4], [-0.95, -0.55]].forEach(([mx, mz]) => {
     const sh = new THREE.Group();
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.28, 10), shroomStemM);
@@ -1170,8 +1137,8 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     sh.position.set(mx, 0.02, mz);
     tarsius.add(sh);
   });
-  const sproutM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x46b457,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  const sproutM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x46b457,
+    roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[-1.0, 0.55], [0.9, -0.6]].forEach(([sx, sz], si) => {
     const sp = new THREE.Group();
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.3, 8), sproutM);
@@ -1185,9 +1152,9 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     tarsius.add(sp);
   });
   // tiny glowing mushrooms + moss ringing the stump bottom
-  const glowCapM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x4cc9f0,
+  const glowCapM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x4cc9f0,
     emissive: 0x4cc9f0, emissiveIntensity: 1.4, roughness: 0.2, metalness: 0.0,
-    clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    clearcoatRoughness: 0.1 });
   [[1.75, 0.5], [-1.7, -0.7], [0.4, -1.85]].forEach(([gx, gz]) => {
     const gm = new THREE.Group();
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.2, 8), shroomStemM);
@@ -1197,8 +1164,8 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     gm.position.set(gx, 0.02, gz);
     tarsius.add(gm);
   });
-  const mossBaseM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x46b457,
-    roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+  const mossBaseM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x46b457,
+    roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [[1.55, 1.1, 0.28], [-1.5, 0.9, 0.24], [-0.6, 1.7, 0.3], [0.9, -1.6, 0.26], [-1.1, -1.4, 0.22]].forEach(([mx, mz, mr]) => {
     const mo = new THREE.Mesh(new THREE.SphereGeometry(mr, 10, 8), mossBaseM);
     mo.position.set(mx, 0.06, mz); mo.scale.y = 0.35;
@@ -1211,14 +1178,14 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.24, 8), shroomStemM);
     stem.position.y = 0.12; gm.add(stem);
     const cap = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, color: gc, emissive: gc,
-        emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+      new THREE.MeshStandardMaterial({ flatShading: true, color: gc, emissive: gc,
+        emissiveIntensity: 2.0, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
     cap.position.y = 0.27; cap.scale.y = 0.7; cap.castShadow = true; gm.add(cap);
     gm.position.set(gx, 0.02, gz);
     tarsius.add(gm);
   });
   // lush tiny ferns fanning out between the roots
-  const fernM = new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, side: THREE.DoubleSide });
+  const fernM = new THREE.MeshStandardMaterial({ flatShading: true, color: 0x2f9e44, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide , bumpMap: feltNoise, bumpScale: 0.28});
   [[1.3, 1.3], [-1.35, 1.15], [0.2, -1.9], [-1.2, -1.5]].forEach(([fx, fz]) => {
     const fern = new THREE.Group();
     for (let i = 0; i < 6; i++) {
@@ -1236,8 +1203,9 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
 
   tarsiusBody = new THREE.Group(); tarsiusBody.position.set(0, 1.0, 0.55); tarsiusBody.scale.setScalar(1.3); tarsius.add(tarsiusBody);
   // ultra-cute stylized TARSIER: huge head, saucer eyes, spindly limbs, vinyl gloss
-  const fur = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xee9a2f, roughness: 0.2, });
-  const bellyM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xf7e8c8, roughness: 0.2, });
+  // Character materials stay MeshPhysical (clearcoat) — env is Standard for perf.
+  const fur = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 0.85, clearcoatRoughness: 0.18, color: 0xee9a2f, roughness: 0.2, });
+  const bellyM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 0.85, clearcoatRoughness: 0.18, color: 0xf7e8c8, roughness: 0.2, });
   // tiny chubby body nestled in the stump hollow
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.62, 28, 20), fur);
   body.scale.set(1, 1.15, 0.9); body.position.y = 0.1; body.castShadow = true;
@@ -1268,14 +1236,14 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   eyeR.children[1].position.x = 0.1;
   tarsiusBody.add(eyeL, eyeR);
   // thin dark eye-rings for extra toy expression
-  const ringM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0x5a3a22, roughness: 0.2, });
+  const ringM = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.15, color: 0x5a3a22, roughness: 0.2, });
   [-1, 1].forEach(s => {
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.055, 10, 24), ringM);
     ring.position.set(s * 0.38, 1.55, 0.82);
     tarsiusBody.add(ring);
   });
   // large rounded bat-like ears sticking out sideways (bounce on fire via tick)
-  const leafM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const leafM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0x2f9e44, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   [-1, 1].forEach(s => {
     const ear = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), fur);
     ear.position.set(s * 0.95, 1.75, -0.1); ear.scale.set(1, 1.2, 0.35);
@@ -1283,7 +1251,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     ear.castShadow = true; ear.name = s < 0 ? 'earL' : 'earR';
     tarsiusBody.add(ear);
     const inner = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12),
-      new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, color: 0xe8b87d }));
+      new THREE.MeshStandardMaterial({ flatShading: false, roughness: 0.95, metalness: 0.0, color: 0xe8b87d , bumpMap: feltNoise, bumpScale: 0.28}));
     inner.position.set(s * 0.95, 1.75, 0.0); inner.scale.set(1, 1.2, 0.3);
     inner.rotation.z = s * -0.3;
     tarsiusBody.add(inner);
@@ -1291,8 +1259,8 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   // tiny tropical flower tucked behind the right ear
   {
     const bloom = new THREE.Group();
-    const petalM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xff5d8f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
-    const heartM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xffc700, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 });
+    const petalM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xff5d8f, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+    const heartM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xffc700, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
     for (let i = 0; i < 5; i++) {
       const p = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), petalM);
       const a = (i / 5) * Math.PI * 2;
@@ -1309,8 +1277,8 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     tarsiusBody.add(bloom);
   }
   // tiny straw hat with a red band for the little adventurer
-  const hatM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe3c06a, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const bandHM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const hatM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xe3c06a, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const bandHM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xe63946, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.62, 0.09, 22), hatM);
   brim.position.set(-0.06, 2.22, -0.02); brim.rotation.z = 0.14; brim.castShadow = true;
   tarsiusBody.add(brim);
@@ -1320,7 +1288,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   const hatBand = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.06, 10, 22), bandHM);
   hatBand.position.set(-0.08, 2.3, -0.02); hatBand.rotation.x = Math.PI / 2 - 0.14;
   tarsiusBody.add(hatBand);
-  const bandM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xe63946, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const bandM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xe63946, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.13, 12, 24), bandM);
   band.position.set(0, 0.62, 0.1); band.rotation.x = 1.25; band.rotation.z = 0.2;
   band.castShadow = true;
@@ -1336,12 +1304,12 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   snout.position.set(0, 1.02, 0.92); snout.scale.set(1.15, 0.8, 0.8);
   tarsiusBody.add(snout);
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8),
-    new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.1, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.05, color: 0x3a2a1a }));
+    new THREE.MeshStandardMaterial({ flatShading: false, roughness: 0.1, metalness: 0.0, color: 0x3a2a1a }));
   nose.position.set(0, 1.08, 1.04);
   tarsiusBody.add(nose);
   // chunky hollow-log cannon: bark tube + wood rim + dark bore + node rings
-  const barkM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xcfb95c, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
-  const paleWoodM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xd9a75f, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const barkM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xcfb95c, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
+  const paleWoodM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xd9a75f, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   const log = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 2.3, 20), barkM);
   log.rotation.x = Math.PI / 2; log.position.set(0, 0.55, 1.1); log.castShadow = true;
   tarsiusBody.add(log);
@@ -1349,7 +1317,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   logRim.position.set(0, 0.55, 2.24); logRim.castShadow = true;
   tarsiusBody.add(logRim);
   const bore = new THREE.Mesh(new THREE.CircleGeometry(0.18, 20),
-    new THREE.MeshPhysicalMaterial({ flatShading: false, roughness: 0.2, metalness: 0.0, color: 0x1d130c, emissive: 0x1d130c, emissiveIntensity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+    new THREE.MeshStandardMaterial({ flatShading: false, roughness: 0.2, metalness: 0.0, color: 0x1d130c, emissive: 0x1d130c, emissiveIntensity: 0.7, clearcoatRoughness: 0.1 }));
   bore.position.set(0, 0.55, 2.26);
   tarsiusBody.add(bore);
   [0.45, 1.55].forEach(bz => {
@@ -1374,7 +1342,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
   muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.55, 2.25);
   tarsiusBody.add(muzzle);
   flashMesh = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 12),
-    new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 0.85, transparent: true, opacity: 0 }));
+    new THREE.MeshStandardMaterial({ flatShading: false, metalness: 0.0, roughness: 0.95, color: 0xffe66d, emissive: 0xffe66d, emissiveIntensity: 0.85, transparent: true, opacity: 0 , bumpMap: feltNoise, bumpScale: 0.28}));
   flashMesh.position.copy(muzzle.position);
   tarsiusBody.add(flashMesh);
   // long spindly limbs between two points, with suction-cup pads gripping
@@ -1388,7 +1356,7 @@ let muzzle, tarsiusBody, eyeL, eyeR, tailMesh, flashMesh, tarBlob;
     tarsiusBody.add(m);
     return m;
   };
-  const padM = new THREE.MeshPhysicalMaterial({ flatShading: false, color: 0xf7e8c8, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1});
+  const padM = new THREE.MeshStandardMaterial({ flatShading: false, color: 0xf7e8c8, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28});
   // spindly arms wrapping the log cannon, finger pads pressed on the bark
   [-1, 1].forEach(s => {
     limb(s * 0.52, 0.32, 0.3, s * 0.3, 0.62, 1.2, 0.07, fur);
@@ -1572,7 +1540,7 @@ function spawnPickup(type = null, x = null, z = null) {
   chest.group.position.y = 1.0; g.add(chest.group);
   const accent = PICKUP_ACCENT[t] ?? 0xffe8a3;
   const halo = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.09, 10, 24),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, color: accent, emissive: accent, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+    new THREE.MeshStandardMaterial({ flatShading: true, color: accent, emissive: accent, emissiveIntensity: 0.9, roughness: 0.95, metalness: 0.0, bumpMap: feltNoise, bumpScale: 0.28}));
   halo.rotation.x = Math.PI / 2; halo.position.y = 1.0; g.add(halo);
   const tag = letterSprite(POWERS[t].letter, POWERS[t].bg);
   tag.position.y = 2.3; g.add(tag);
@@ -1732,7 +1700,7 @@ function featherBurst(pos) {
   const cols = [0xffffff, 0x5a3a22, 0xfdfdf8];
   for (let i = 0; i < 16; i++) {
     const m = new THREE.Mesh(new THREE.SphereGeometry(0.1 + Math.random() * 0.1, 10, 8),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, roughness: 0.3, metalness: 0.0, clearcoat: 0.8, clearcoatRoughness: 0.2, color: cols[i % 3] }));
+      new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.3, metalness: 0.0, color: cols[i % 3] }));
     m.position.copy(pos);
     const v = new THREE.Vector3((Math.random() - 0.5) * 10, Math.random() * 8 + 2, (Math.random() - 0.5) * 10);
     G.particles.push({ m, v, life: 0.8 + Math.random() * 0.4 });
@@ -1800,13 +1768,28 @@ function eagleStoop(e) {
 const ballGeo = new THREE.SphereGeometry(BALL_R, 32, 24);
 const ballMats = PALETTE.map(c => marbleMat(c));
 const hiGeo = new THREE.SphereGeometry(0.16, 12, 10);
-const hiMat = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.85, transparent: true, opacity: 0.85 });
+const hiMat = new THREE.MeshStandardMaterial({ flatShading: false, metalness: 0.0, roughness: 0.95, color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.6, transparent: true, opacity: 0.85 , bumpMap: feltNoise, bumpScale: 0.28});
 const ringGeo = new THREE.TorusGeometry(0.8, 0.11, 8, 28);
-const ringMat = new THREE.MeshPhysicalMaterial({ flatShading: false, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: 0xffc700, emissive: 0xffb700, emissiveIntensity: 0.9});
+const ringMat = new THREE.MeshStandardMaterial({ flatShading: false, metalness: 0.0, roughness: 0.95, color: 0xffc700, emissive: 0xffb700, emissiveIntensity: 2.6, bumpMap: feltNoise, bumpScale: 0.28});
 const wingGeo = new THREE.SphereGeometry(0.2, 12, 10);
 const trailGeo = new THREE.SphereGeometry(0.2, 14, 10);
 /* Shared marble kit: same assets, every level (path/projectiles/orbs). */
 const kit = { ballGeo, ballMats, hiGeo, hiMat, ringGeo, ringMat, wingGeo, trailGeo };
+// freeze static environment transforms (no per-frame matrix rebuild)
+scene.traverse((o) => {
+  if (o.isMesh || o.isGroup) {
+    if (o.userData && o.userData.treeTop) { o.matrixAutoUpdate = false; }
+    if (o.isMesh && !o.userData.animated) {
+      // keep dynamic pieces (water, tarsius, balls) animating — freeze obvious statics
+      if (o.parent && o.parent.userData && o.parent.userData.treeTop) o.matrixAutoUpdate = false;
+    }
+  }
+});
+const starBurst = new StarBurst(scene);
+const comicText = new ComicText(scene);
+const shellMats = QUALITY.glassTransmission
+  ? PALETTE.map(c => glassShellMat(new THREE.Color(c)))
+  : null;
 
 function letterSprite(letter, bg) {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -1869,7 +1852,13 @@ function mechCtx() {
 }
 
 function makeBallMesh(color, power) {
-  return assetsMakeBallMesh(kit, POWERS, color, power);
+  const mesh = assetsMakeBallMesh(kit, POWERS, color, power);
+  if (shellMats) {
+    const shell = new THREE.Mesh(shellGeometryFor(BALL_R * 1.04), shellMats[color] || shellMats[0]);
+    shell.renderOrder = 2;
+    mesh.add(shell);
+  }
+  return mesh;
 }
 function spawnBall(s = 0, color = randColor(), power = null) {
   mechSpawnBall(mechCtx(), s, color, power);
@@ -1904,6 +1893,13 @@ function bumpScore() {
 }
 function floater(text, worldPos, big = false) {
   if (G.sim) return;
+  if (big || /COMBO|BOOM|\+\d/i.test(text)) {
+    comicText.pop(String(text), worldPos, {
+      color: big ? '#ffc700' : '#ffe66d',
+      size: big ? 5.4 : 3.9,
+      life: big ? 1.25 : 0.95,
+    });
+  }
   const v = worldPos.clone().project(camera);
   const el = document.createElement('div');
   el.className = 'float' + (big ? ' big' : '');
@@ -1926,9 +1922,10 @@ function showBanner(main, sub = '', ms = 2000) {
 }
 function burst(pos, colorIdx, n = 14, spread = 8) {
   if (G.sim) return;
+  starBurst.burst(pos, PALETTE[colorIdx] || 0xffc700, Math.min(n, 20), Math.max(6, spread));
   for (let i = 0; i < n; i++) {
     const m = new THREE.Mesh(new THREE.SphereGeometry(0.12 + Math.random() * 0.12, 12, 10),
-      new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: i % 3 ? PALETTE[colorIdx] : 0xffffff , emissive: i % 3 ? PALETTE[colorIdx] : 0xffffff, emissiveIntensity: 0.85}));
+      new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: i % 3 ? PALETTE[colorIdx] : 0xffffff , emissive: i % 3 ? PALETTE[colorIdx] : 0xffffff, emissiveIntensity: 2.6, bumpMap: feltNoise, bumpScale: 0.28}));
     m.position.copy(pos);
     const v = new THREE.Vector3((Math.random() - 0.5) * spread, Math.random() * 7 + 2, (Math.random() - 0.5) * spread);
     G.particles.push({ m, v, life: 0.7 + Math.random() * 0.4 });
@@ -1938,7 +1935,7 @@ function burst(pos, colorIdx, n = 14, spread = 8) {
 function shockwave(pos, color = 0xffffff, max = 4) {
   if (G.sim) return;
   const m = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.72, 32),
-    new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+    new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color, transparent: true, opacity: 0.9, side: THREE.DoubleSide , bumpMap: feltNoise, bumpScale: 0.28}));
   m.rotation.x = -Math.PI / 2; m.position.copy(pos); m.position.y = 1.0;
   scene.add(m);
   G.rings.push({ m, t: 0, max });
@@ -1968,7 +1965,7 @@ function shoot() {
   scene.add(mesh);
   const trail = [];
   for (let i = 0; i < 4; i++) {
-    const t = new THREE.Mesh(trailGeo, new THREE.MeshPhysicalMaterial({ flatShading: true, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1, roughness: 0.2, color: PALETTE[G.cur], emissive: PALETTE[G.cur], emissiveIntensity: 0.85, transparent: true, opacity: 0.5 - i * 0.11 }));
+    const t = new THREE.Mesh(trailGeo, new THREE.MeshStandardMaterial({ flatShading: true, metalness: 0.0, roughness: 0.95, color: PALETTE[G.cur], emissive: PALETTE[G.cur], emissiveIntensity: 2.4, transparent: true, opacity: 0.5 - i * 0.11 , bumpMap: feltNoise, bumpScale: 0.28}));
     scene.add(t); trail.push(t);
   }
   G.projectiles.push({ color: G.cur, pos: mp.clone(), vel: dir.multiplyScalar(LEVEL.mechanics.projectileSpeed), mesh, core: mesh.children[0], trail, hist: [] });
@@ -2248,7 +2245,7 @@ try {
   }
 } catch { /* ignore */ }
 addEventListener('resize', () => {
-  updateOrthoCamera();
+  updateCameraFit();
   renderer.setSize(innerWidth, innerHeight);
   if (composer) composer.setSize(innerWidth, innerHeight);
 });
@@ -2410,6 +2407,8 @@ function tick() {
   G.time += dt;
   if (G.shootCD > 0) G.shootCD -= dt;
   Music.tick();
+  starBurst.update(dt);
+  comicText.update(dt);
 
   /* --- ambient life (always, even in menu) --- */
   clouds.forEach(c => { c.g.position.y = c.y0 + Math.sin(G.time * 0.8 + c.ph) * 0.5; });
@@ -2580,8 +2579,12 @@ function tick() {
   const shx = (Math.random() - 0.5) * G.shake * 0.9;
   const shy = (Math.random() - 0.5) * G.shake * 0.7;
   const drift = G.attract ? Math.sin(G.time * 0.05) * 2.5 : 0; // slow cinematic pan
-  camera.position.set(Math.sin(G.time * 0.08) * 1.2 + shx + drift, 26 + shy, 20);
-  camera.lookAt(0, 0, 1.0);
+  camera.position.set(
+    CAM_BASE.x + Math.sin(G.time * 0.08) * 1.2 + shx + drift,
+    CAM_BASE.y + shy,
+    CAM_BASE.z,
+  );
+  camera.lookAt(CAM_TARGET);
 
   step(dt, rawDt);
   // attract-mode self-play + auto-restart (trailer demo)
@@ -2596,6 +2599,9 @@ function tick() {
       startAttract();
     }
   }
+    /* DOF focus follows the central cannon: sharp on the tarsius + active
+     track, foreground/background melt into macro bokeh. */
+  if (composer && composer.setFocus) composer.setFocus(camera.position.distanceTo(tarsius.position));
   if (composer) composer.render(); else renderer.render(scene, camera);
 }
 
@@ -2672,7 +2678,7 @@ function stepJalak(dt) {
       } else if (G.jalakMode === 'bomb') {
         const at = G.jalakPayload ? G.jalakPayload.clone() : J.position.clone();
         const bm = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12),
-          new THREE.MeshPhysicalMaterial({ flatShading: true, color: 0x2b2d42, emissive: 0xff9e00, emissiveIntensity: 1.2, roughness: 0.25, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1 }));
+          new THREE.MeshStandardMaterial({ flatShading: true, color: 0x2b2d42, emissive: 0xff9e00, emissiveIntensity: 1.2, roughness: 0.25, metalness: 0.0, clearcoatRoughness: 0.1 }));
         bm.position.copy(J.position);
         scene.add(bm);
         bombFall = { mesh: bm, t: 0.3, target: new THREE.Vector3(at.x, 1.15, at.z) };
@@ -2858,7 +2864,7 @@ function step(dt, rawDt) {
           const ax = new THREE.Vector3(-tmpAxis.z, 0, tmpAxis.x).normalize();
           x.core.rotateOnWorldAxis(ax, (spd * dt) / BALL_R);
         });
-        // Zuma-style chaining: freshly assembled segments may complete a 3+ run
+        // Chain consolidation: freshly assembled segments may complete a 3+ run
         // (object refs re-resolved since pops splice the array; each pop also
         // nudges the chain back, so combos buy the player real room).
         if (!reversing) {

@@ -13,7 +13,7 @@ export const PALETTE_CSS = ['#e63946', '#4361ee', '#2dc653', '#ffc700'];
 export const BALL_R = 0.72;
 export const SPACING = 1.5;
 
-const KOHOLINT_PATH = [
+const SAMALONA_PATH = [
   [-18.5, -15], [-9, -15.5], [0, -15], [9, -15.5], [18.5, -15],
   [20, -11],
   [18.5, -7], [9, -6.5], [0, -7], [-9, -6.5], [-18.5, -7],
@@ -24,15 +24,15 @@ const KOHOLINT_PATH = [
   [-16, 13], [-14.5, 15],
 ];
 
-export const koholint = {
-  id: 'koholint',
-  name: 'Koholint Island',
+export const samalona = {
+  id: 'samalona',
+  name: 'Pulau Samalona',
   levelNo: 1,
   bannerMain: 'LEVEL 1',
-  bannerSub: 'Koholint Island — defend the Skull Cave!',
+  bannerSub: 'Pulau Samalona — defend the Skull Cave!',
   totalBalls: 40,
   colorsN: 4,
-  pathPts2D: KOHOLINT_PATH,
+  pathPts2D: SAMALONA_PATH,
   curveTension: 0.35,
   perches: [[0, -3], [-13.5, 5.5], [20, -3], [-5, 13]],
   skullOffset: [0.4, 0, 0.5],
@@ -90,14 +90,14 @@ export const koholint = {
    (bigger rollback, lazier magnet, earlier danger). Proves the
    architecture without touching the default level. */
 export const sunsetCove = {
-  ...koholint,
+  ...samalona,
   id: 'sunset-cove',
   name: 'Sunset Cove',
   levelNo: 2,
   bannerMain: 'LEVEL 2',
   bannerSub: 'Sunset Cove — same toys, new shoreline!',
   // Mirror the road north↔south so the beach run becomes the north run.
-  pathPts2D: KOHOLINT_PATH.map(([x, z]) => [-x, -z]),
+  pathPts2D: SAMALONA_PATH.map(([x, z]) => [-x, -z]),
   perches: [[0, 3], [13.5, -5.5], [-20, 3], [5, -13]],
   skullOffset: [0.4, 0, 0.5],
   portalOffset: [-0.6, 0, 0],
@@ -116,7 +116,7 @@ export const sunsetCove = {
   },
   powersAvailable: ['bomb', 'stop', 'frenzy'],
   mechanics: {
-    ...koholint.mechanics,
+    ...samalona.mechanics,
     rollback: 2.0,
     magnetSpeed: 6.5,
     dangerThreshold: 0.68,
@@ -128,8 +128,8 @@ export const sunsetCove = {
   },
 };
 
-export const LEVELS = { koholint, 'sunset-cove': sunsetCove };
-export const DEFAULT_LEVEL_ID = 'koholint';
+export const LEVELS = { samalona, 'sunset-cove': sunsetCove };
+export const DEFAULT_LEVEL_ID = 'samalona';
 
 export function getLevel(id) {
   return LEVELS[id] || LEVELS[DEFAULT_LEVEL_ID];

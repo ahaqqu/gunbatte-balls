@@ -219,8 +219,8 @@ export function marbleMat(color, ballFaceTex, palette) {
     color: 0xffffff, map: ballFaceTex[idx],
     roughness: 0.05, metalness: 0.0,
     clearcoat: 1.0, clearcoatRoughness: 0.03,
-    transmission: 0.55, thickness: 0.8, ior: 1.45,
-    specularIntensity: 1.0, emissive: color, emissiveIntensity: 0.35,
+    transmission: 1.0, thickness: 2.0, ior: 1.5,
+    specularIntensity: 1.0, envMapIntensity: 1.2, emissive: color, emissiveIntensity: 0.45,
   });
 }
 

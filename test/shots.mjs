@@ -1,12 +1,12 @@
 import { chromium } from 'playwright';
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-await page.goto('http://localhost:8907/index.html', { waitUntil: 'networkidle' });
-await page.waitForTimeout(2500);
+await page.goto('http://localhost:8907/index.html?hq=1', { waitUntil: 'networkidle' });
+await page.waitForTimeout(6000);
 await page.screenshot({ path: 'site/shots/menu.png' });
 await page.evaluate(() => document.getElementById('start-btn').click());
 await page.evaluate(() => { window.__game.G.introT = 0.01; }); // skip intro under software rendering
-await page.waitForFunction(() => window.__game.status() === 'playing', null, { timeout: 120000 });
+await page.waitForFunction(() => window.__game.status() === 'playing', null, { timeout: 180000 });
 // rig a handsome mid-game chain
 await page.evaluate(() => {
   const X = window.__game, G = X.G;
@@ -18,7 +18,7 @@ await page.evaluate(() => {
   const m = X.pointAt(24 - 5 * 1.14 + 0.5);
   X.shootAt(m.x, m.z);
 });
-await page.waitForTimeout(1200);
+await page.waitForTimeout(3500);
 await page.screenshot({ path: 'site/shots/gameplay.png' });
 // danger drama: push head near skull, pop a burst for fireworks
 await page.evaluate(() => {
@@ -27,7 +27,7 @@ await page.evaluate(() => {
   const head = G.balls[0];
   head.s = X.curveLen * 0.8;
 });
-await page.waitForTimeout(1500);
+await page.waitForTimeout(3500);
 await page.screenshot({ path: 'site/shots/danger.png' });
 // win card
 await page.evaluate(async () => {
@@ -38,7 +38,7 @@ await page.evaluate(async () => {
   }
 });
 await page.evaluate(() => { window.__game.G.introT = 0.01; }); // skip intro under software rendering
-await page.waitForFunction(() => ['playing', 'won'].includes(window.__game.status()), null, { timeout: 120000 });
+await page.waitForFunction(() => ['playing', 'won'].includes(window.__game.status()), null, { timeout: 180000 });
 await page.evaluate(async () => {
   const X = window.__game, G = X.G;
   if (G.status !== 'playing') return;
@@ -51,8 +51,8 @@ await page.evaluate(async () => {
   const m = X.pointAt(19.43 + 0.5); X.shootAt(m.x, m.z);
   await new Promise(r => setTimeout(r, 14000));
 });
-await page.waitForFunction(() => window.__game.status() === 'won', null, { timeout: 150000 });
-await page.waitForTimeout(800);
+await page.waitForFunction(() => window.__game.status() === 'won', null, { timeout: 180000 });
+await page.waitForTimeout(2500);
 await page.screenshot({ path: 'site/shots/win.png' });
 console.log('SHOTS DONE');
 await browser.close();

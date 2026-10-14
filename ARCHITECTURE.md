@@ -6,12 +6,44 @@ All reusable logic lives in `src/`:
 ```
 src/
   assets.js       → reusable toy-diorama visual factories (NO game state, NO level data)
-  mechanics.js    → Zuma chain rules, parameterized by LevelDef (NO art, NO scene building)
+  materials.js    → felt/wood/glass material presets + PMREM environment (procedural Perlin)
+  lighting.js     → warm key + hemisphere fill, 4096² PCF-soft shadows (quality-tiered)
+  post.js         → EffectComposer: RenderPass → SSAO → UnrealBloom → Bokeh DOF → ACES
+  vfx.js          → StarBurst (InstancedMesh stars) + ComicText (HDR pop sprites)
+  mechanics.js    → marble-chain rules, parameterized by LevelDef (NO art, NO scene building)
   powers.js       → pluggable power-seed registry (new powers = new entry, same assets)
   levels.js       → declarative island + ruleset per level (NO art, NO engine code)
   environment.js  → level-driven scene helpers (curve, perches, scatter guard)
 game.js           → wires the above: scene + loop + input + HUD + window.__game
 ```
+
+## Visual pipeline (diorama pass)
+
+- **Renderer** (`game.js`): antialias, high-performance, ACES exposure 1.2,
+  SRGB output, `PCFSoftShadowMap`, physical lights. PerspectiveCamera FOV 27
+  isometric-ish elevation (~54°), fit so ≥40 world units are visible.
+- **Post** (`src/post.js`): hand-rolled passes (no three/examples addons).
+  Order is fixed: SSAO (depth contact AO) → UnrealBloom (threshold 1.0,
+  strength 1.5) → Bokeh DOF (aperture 0.0001, focus on the tarsier) →
+  OutputPass (three.js built-in ACES + sRGB via MeshBasicMaterial).
+  `composer.setFocus(dist)` is driven from `tick()`.
+- **Materials** (`src/materials.js`): `feltMat` / `feltNoise` (Perlin canvas,
+  repeat 50×50) for clay props; `woodMat` for the serpentine track;
+  `glassShellMat` + `marbleCoreMat` for refractive marbles (transmission 1.0,
+  ior 1.5, thickness 2.0); `buildEnvironment(renderer)` PMREM for reflections.
+- **Lighting** (`src/lighting.js`): key `#ffebb5` @ 3.0 + Hemisphere
+  `#a1d8ff`/`#5e9e3e` @ 1.0. Shadow map 4096² on GPU, 1024² on software GL.
+- **VFX** (`src/vfx.js`): `StarBurst` InstancedMesh star particles (HDR ×3.2
+  tint so bloom catches them) fired from `burst()`; `ComicText` sprites for
+  COMBO/BOOM pops from `floater()`. Both updated every `tick()`.
+- **Quality tier** (`game.js` `QUALITY`): software renderers (SwiftShader /
+  llvmpipe, used by headless tests) drop SSAO and shrink shadows so game time
+  stays real-time. `?hq=1` forces the full look for screenshots.
+- **Performance**: BokehPass removed (isometric angle sells the diorama).
+  SSAO runs at half-res with 8 taps. Environment uses `MeshStandardMaterial`
+  (flatShading); `MeshPhysicalMaterial` is reserved for the tarsier + glass
+  marbles. Grass/flowers/trees/rocks are `InstancedMesh`. Shadows max 2048
+  tightly bound to the island. Pixel ratio clamped to 2.
 
 ## Rules
 
@@ -51,7 +83,7 @@ game.js           → wires the above: scene + loop + input + HUD + window.__gam
 
 ## Add a new island (same toys, new rules)
 
-1. Add a `LevelDef` in `src/levels.js` (copy `koholint`, change path/perches/
+1. Add a `LevelDef` in `src/levels.js` (copy `samalona`, change path/perches/
    clearances/powers/mechanics). Example: `sunsetCove` mirrors the road,
    swaps `rev → star`, and tweaks `rollback 1.2→2.0`, `magnet 5→6.5`,
    `danger 0.72→0.68`.
@@ -63,5 +95,5 @@ game.js           → wires the above: scene + loop + input + HUD + window.__gam
    allowed power, rejects unknown powers, asserts zero page errors).
 
 Switch islands at runtime via `?level=<id>` (menu buttons or
-`window.__game.switchLevel(id)`). Default is `koholint`, so existing links,
+`window.__game.switchLevel(id)`). Default is `samalona`, so existing links,
 tests, and the trailer (`?attract=1`) are unaffected.
