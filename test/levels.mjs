@@ -3,7 +3,7 @@ import { chromium } from 'playwright';
 // power mix (registry), reject unknown powers, and stay error-free.
 // Usage: node test/levels.mjs
 const browser = await chromium.launch();
-const levels = ['koholint', 'sunset-cove'];
+const levels = ['samalona', 'sunset-cove'];
 let failed = 0;
 for (const id of levels) {
   const page = await browser.newPage({ viewport: { width: 640, height: 400 } });

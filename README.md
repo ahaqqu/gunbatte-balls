@@ -1,7 +1,7 @@
-# ◉ GUNBATTE BALLS — Koholint Island
+# ◉ GUNBATTE BALLS — Pulau Samalona
 
-**Ganbatte — do your best!** A **toy-diorama marble shooter** inspired by Zuma and
-*The Legend of Zelda: Link's Awakening*. Guide a big-eyed **tarsius** guardian clinging
+**Ganbatte — do your best!** A **toy-diorama marble shooter**.
+Guide a big-eyed **tarsius** guardian clinging
 to its perch tree, leap between **4 trees** for better angles, blast
 seed-shots, match **3+** to pop, and stop 40 marbles from reaching the **Skull Cave**.
 Free demo — one level, three difficulties, runs in the browser.
@@ -10,12 +10,12 @@ Free demo — one level, three difficulties, runs in the browser.
 
 ## Features
 
-- Zuma-like chain gameplay: serpentine road, magnet catch-up, combos, streak bonuses
+- Marble-chain gameplay: serpentine road, magnet catch-up, combos, streak bonuses
 - **Power seeds** — Boomseed (area blast), Chillseed (slow-mo), Rewindseed (reverse time)
 - Three difficulties (**Chill / Normal / Spicy**), balanced so humans can win *and* lose
 - Danger mode (glowing skull, heartbeat, red vignette), difficulty ramp, 1–3 star rating
 - Living diorama: animated faceted water, butterflies, pinwheels, torchlight, skull smoke,
-  hidden Wind Fish egg shrine, sharp toy-box look (no blur: full-island clarity)
+  hidden spotted egg shrine, sharp toy-box look (no blur: full-island clarity)
 - Fully **procedural chiptune** (WebAudio, zero audio files) + full SFX set
 - Pause, mute, best-score persistence, announcements, floating score text, screen shake
 - **Attract mode**: `index.html?attract=1` runs a self-playing demo (used by the site trailer)
@@ -60,5 +60,5 @@ Entry points: `/index.html` (game), `/site/index.html` (trailer + download).
 
 ## Credits
 
-Fan-made demo. Gameplay homage to Zuma; art homage to Link's Awakening.
+Original indie demo. Match-3 marble-shooter gameplay with chain pops and power seeds.
 Built with Three.js + WebAudio. Ganbatte!

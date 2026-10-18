@@ -4,7 +4,7 @@ import { makeBallMesh } from './assets.js';
 import { triggerPower as triggerPowerReg } from './powers.js';
 
 /* ============================================================
-   MECHANICS — Zuma chain rules, parameterized by level (no art,
+   MECHANICS — marble-chain rules, parameterized by level (no art,
    no scene building). Same engine runs every island; per-level
    tweaks live in level.mechanics + level.powersAvailable.
    ctx = live wiring from game.js:
@@ -129,7 +129,7 @@ export function popCheck(ctx, startIdx) {
     if (n >= 4) { ctx.shockwave(mid, ctx.PALETTE[c], 3.5); G.shake = Math.min(1, G.shake + 0.35); }
     const gained = n * 10 * G.combo;
     G.score += gained; G.destroyed += n;
-    // Zuma-style breather: nudge the whole chain back (level-tunable).
+    // Pop breather: nudge the whole chain back (level-tunable).
     if (b.length) {
       for (const x of b) x.s -= m.rollback;
       const tail = b[b.length - 1].s;
